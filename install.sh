@@ -57,6 +57,20 @@ function run(argv) {
 JXA
 }
 
+config_has_key() {
+  local key="$1"
+  [ -f "$CONFIG_FILE" ] || return 1
+  grep -Eq "^[[:space:]]*$key[[:space:]]*=" "$CONFIG_FILE"
+}
+
+ensure_config_key() {
+  local key="$1"
+  local line="$2"
+
+  config_has_key "$key" && return 0
+  printf '%s\n' "$line" >> "$CONFIG_FILE"
+}
+
 write_hooks_json() {
   local dry="$1"
   /usr/bin/osascript -l JavaScript - "$HOOKS_FILE" "$INSTALL_ALARM" "$dry" <<'JXA'
@@ -118,7 +132,7 @@ function run(argv) {
       hooks: [{
         type: 'command',
         command: '"' + alarmPath + '" ' + subcommand,
-        timeout: 5,
+        timeout: 10,
         statusMessage: statusMessage
       }]
     });
@@ -169,7 +183,7 @@ if ! command_exists codex; then
 fi
 
 if ! command_exists terminal-notifier; then
-  echo "WARN: terminal-notifier missing; click-to-focus will be unavailable."
+  echo "WARN: terminal-notifier missing; default notification backend will be unavailable."
   echo "Install manually with: brew install terminal-notifier"
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "DRY-RUN: would offer Homebrew install in interactive mode."
@@ -185,7 +199,12 @@ fi
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "DRY-RUN: would create $CODEX_ALARM_HOME"
   echo "DRY-RUN: would install $INSTALL_ALARM"
-  [ -f "$CONFIG_FILE" ] || echo "DRY-RUN: would create $CONFIG_FILE"
+  if [ -f "$CONFIG_FILE" ]; then
+    config_has_key CODEX_ALARM_BACKEND_TIMEOUT_SECONDS || echo "DRY-RUN: would append CODEX_ALARM_BACKEND_TIMEOUT_SECONDS to $CONFIG_FILE"
+    config_has_key CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK || echo "DRY-RUN: would append CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK to $CONFIG_FILE"
+  else
+    echo "DRY-RUN: would create $CONFIG_FILE"
+  fi
   [ -f "$HOOKS_FILE" ] && echo "DRY-RUN: would back up $HOOKS_FILE"
   echo "DRY-RUN: would write Codex Alarm hooks:"
   write_hooks_json 1
@@ -207,7 +226,12 @@ CODEX_ALARM_ACTIVATE_BUNDLE_ID="$detected_bundle_id"
 CODEX_ALARM_SOUND="Glass"
 CODEX_ALARM_NOTIFY_ON_STOP="1"
 CODEX_ALARM_NOTIFY_ON_PERMISSION="1"
+CODEX_ALARM_BACKEND_TIMEOUT_SECONDS="3"
+CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK="0"
 EOF
+else
+  ensure_config_key CODEX_ALARM_BACKEND_TIMEOUT_SECONDS 'CODEX_ALARM_BACKEND_TIMEOUT_SECONDS="3"'
+  ensure_config_key CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK 'CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK="0"'
 fi
 
 mkdir -p "$CODEX_HOME"

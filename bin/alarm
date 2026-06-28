@@ -2,7 +2,7 @@
 #
 # Codex Alarm: local macOS notifications for Codex CLI lifecycle hooks.
 
-VERSION="0.1.0"
+VERSION="1.1.0"
 
 env_was_set() {
   [ "${!1+x}" = "x" ]
@@ -13,11 +13,15 @@ ORIG_BUNDLE_ID="${CODEX_ALARM_ACTIVATE_BUNDLE_ID-}"
 ORIG_SOUND="${CODEX_ALARM_SOUND-}"
 ORIG_NOTIFY_STOP="${CODEX_ALARM_NOTIFY_ON_STOP-}"
 ORIG_NOTIFY_PERMISSION="${CODEX_ALARM_NOTIFY_ON_PERMISSION-}"
+ORIG_BACKEND_TIMEOUT="${CODEX_ALARM_BACKEND_TIMEOUT_SECONDS-}"
+ORIG_ALLOW_OSASCRIPT_FALLBACK="${CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK-}"
 HAS_BACKEND=0; env_was_set CODEX_ALARM_BACKEND && HAS_BACKEND=1
 HAS_BUNDLE_ID=0; env_was_set CODEX_ALARM_ACTIVATE_BUNDLE_ID && HAS_BUNDLE_ID=1
 HAS_SOUND=0; env_was_set CODEX_ALARM_SOUND && HAS_SOUND=1
 HAS_NOTIFY_STOP=0; env_was_set CODEX_ALARM_NOTIFY_ON_STOP && HAS_NOTIFY_STOP=1
 HAS_NOTIFY_PERMISSION=0; env_was_set CODEX_ALARM_NOTIFY_ON_PERMISSION && HAS_NOTIFY_PERMISSION=1
+HAS_BACKEND_TIMEOUT=0; env_was_set CODEX_ALARM_BACKEND_TIMEOUT_SECONDS && HAS_BACKEND_TIMEOUT=1
+HAS_ALLOW_OSASCRIPT_FALLBACK=0; env_was_set CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK && HAS_ALLOW_OSASCRIPT_FALLBACK=1
 
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CODEX_ALARM_HOME="${CODEX_ALARM_HOME:-$CODEX_HOME/alarm}"
@@ -28,6 +32,8 @@ CODEX_ALARM_ACTIVATE_BUNDLE_ID=""
 CODEX_ALARM_SOUND="Glass"
 CODEX_ALARM_NOTIFY_ON_STOP="1"
 CODEX_ALARM_NOTIFY_ON_PERMISSION="1"
+CODEX_ALARM_BACKEND_TIMEOUT_SECONDS="3"
+CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK="0"
 CONFIG_ERROR=""
 
 set_config_error() {
@@ -104,6 +110,23 @@ load_config() {
             ;;
         esac
         ;;
+      CODEX_ALARM_BACKEND_TIMEOUT_SECONDS)
+        if [[ "$value" =~ ^[0-9]+$ ]] && [ "$value" -ge 1 ]; then
+          CODEX_ALARM_BACKEND_TIMEOUT_SECONDS="$value"
+        else
+          set_config_error "$CONFIG_FILE:$line_number: CODEX_ALARM_BACKEND_TIMEOUT_SECONDS must be a positive integer"
+          CODEX_ALARM_BACKEND_TIMEOUT_SECONDS="$value"
+        fi
+        ;;
+      CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK)
+        case "$value" in
+          0|1) CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK="$value" ;;
+          *)
+            set_config_error "$CONFIG_FILE:$line_number: CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK must be 0 or 1"
+            CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK="$value"
+            ;;
+        esac
+        ;;
     esac
   done < "$CONFIG_FILE"
 }
@@ -114,6 +137,8 @@ apply_env_overrides() {
   [ "$HAS_SOUND" -eq 1 ] && CODEX_ALARM_SOUND="$ORIG_SOUND"
   [ "$HAS_NOTIFY_STOP" -eq 1 ] && CODEX_ALARM_NOTIFY_ON_STOP="$ORIG_NOTIFY_STOP"
   [ "$HAS_NOTIFY_PERMISSION" -eq 1 ] && CODEX_ALARM_NOTIFY_ON_PERMISSION="$ORIG_NOTIFY_PERMISSION"
+  [ "$HAS_BACKEND_TIMEOUT" -eq 1 ] && CODEX_ALARM_BACKEND_TIMEOUT_SECONDS="$ORIG_BACKEND_TIMEOUT"
+  [ "$HAS_ALLOW_OSASCRIPT_FALLBACK" -eq 1 ] && CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK="$ORIG_ALLOW_OSASCRIPT_FALLBACK"
 }
 
 detect_bundle_id() {
@@ -145,46 +170,164 @@ command_exists() {
 resolve_backend() {
   case "$CODEX_ALARM_BACKEND" in
     terminal-notifier)
-      command_exists terminal-notifier && printf '%s' "terminal-notifier" || printf '%s' "osascript"
+      printf '%s' "terminal-notifier"
       ;;
     osascript)
       printf '%s' "osascript"
       ;;
     auto|*)
-      command_exists terminal-notifier && printf '%s' "terminal-notifier" || printf '%s' "osascript"
+      printf '%s' "terminal-notifier"
       ;;
   esac
 }
 
-run_notification() {
+osascript_fallback_allowed() {
+  [ "$CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK" = "1" ]
+}
+
+log_message() {
+  mkdir -p "$CODEX_ALARM_HOME" 2>/dev/null || return 0
+  [ -d "$CODEX_ALARM_HOME" ] || return 0
+  printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >> "$CODEX_ALARM_HOME/alarm.log" 2>/dev/null || true
+}
+
+log_field() {
+  local value="$1"
+  value="${value//$'\r'/ }"
+  value="${value//$'\n'/ }"
+  value="${value//|/ }"
+  value="$(trim "$value")"
+  [ -n "$value" ] || value="-"
+  printf '%s' "$value"
+}
+
+log_notification_attempt() {
   local event="$1"
-  local payload_file backend bundle_id notifier_path dry_run
+  local backend="$2"
+  local project="$3"
+  local tool="$4"
+  local detail="$5"
 
   case "$event" in
-    stop)
-      [ "$CODEX_ALARM_NOTIFY_ON_STOP" = "1" ] || return 0
-      ;;
-    permission)
-      [ "$CODEX_ALARM_NOTIFY_ON_PERMISSION" = "1" ] || return 0
-      ;;
+    stop|permission) ;;
+    *) return 0 ;;
   esac
 
-  command_exists /usr/bin/osascript || return 0
-  mkdir -p "$CODEX_ALARM_HOME" 2>/dev/null || true
+  log_message "event=$(log_field "$event") backend=$(log_field "$backend") project=$(log_field "$project") tool=$(log_field "$tool") detail=$(log_field "$detail")"
+}
 
-  payload_file="${TMPDIR:-/tmp}/codex-alarm-payload.$$"
-  cat > "$payload_file" 2>/dev/null || payload_file=""
+run_supervised_timeout() {
+  local use_process_group="$1"
+  local timeout_seconds="$2"
+  local output_file="$3"
+  local pid elapsed
+  shift 3
 
-  backend="$(resolve_backend)"
-  bundle_id="$(detect_bundle_id)"
-  notifier_path=""
-  if [ "$backend" = "terminal-notifier" ]; then
-    notifier_path="$(command -v terminal-notifier 2>/dev/null || true)"
-    [ -n "$notifier_path" ] || backend="osascript"
+  case "$timeout_seconds" in
+    ""|*[!0-9]*) timeout_seconds=3 ;;
+  esac
+  [ "$timeout_seconds" -ge 1 ] 2>/dev/null || timeout_seconds=3
+
+  if command_exists /usr/bin/perl; then
+    /usr/bin/perl -e '
+      use POSIX ":sys_wait_h";
+      my $use_process_group = shift @ARGV;
+      my $timeout = shift @ARGV;
+      exit 127 unless @ARGV;
+      my $pid = fork();
+      exit 127 unless defined $pid;
+      if ($pid == 0) {
+        setpgrp(0, 0) or die "setpgrp failed: $!" if $use_process_group;
+        exec @ARGV;
+        print STDERR "exec failed: $!\n";
+        exit 127;
+      }
+      my $deadline = time() + $timeout;
+      while (1) {
+        my $done = waitpid($pid, WNOHANG);
+        if ($done == $pid) {
+          exit(($? & 127) ? 128 + ($? & 127) : ($? >> 8));
+        }
+        last if time() >= $deadline;
+        select undef, undef, undef, 0.1;
+      }
+      my $target = $use_process_group ? -$pid : $pid;
+      kill "TERM", $target;
+      select undef, undef, undef, 0.2;
+      if (waitpid($pid, WNOHANG) == 0) {
+        kill "KILL", $target;
+        waitpid($pid, 0);
+      }
+      exit 124;
+    ' "$use_process_group" "$timeout_seconds" "$@" > "$output_file" 2>&1
+    return $?
   fi
-  dry_run="${CODEX_ALARM_DRY_RUN:-0}"
 
-  /usr/bin/osascript -l JavaScript - "$event" "$backend" "$bundle_id" "$CODEX_ALARM_SOUND" "$CODEX_ALARM_HOME" "$dry_run" "$payload_file" "$notifier_path" <<'JXA' || true
+  "$@" > "$output_file" 2>&1 &
+  pid=$!
+  elapsed=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$elapsed" -ge "$timeout_seconds" ]; then
+      kill "$pid" 2>/dev/null || true
+      sleep 0.2
+      kill -9 "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      return 124
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  wait "$pid" 2>/dev/null
+}
+
+run_with_timeout() {
+  run_supervised_timeout 0 "$@"
+}
+
+run_process_group_with_timeout() {
+  run_supervised_timeout 1 "$@"
+}
+
+should_print_backend_output() {
+  local event="$1"
+  [ "${CODEX_ALARM_DRY_RUN:-0}" = "1" ] && return 0
+  case "$event" in
+    test|test-permission) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_test_event() {
+  case "$1" in
+    test|test-permission) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+should_retry_osascript_fallback() {
+  local event="$1"
+  local timeout_seconds="$CODEX_ALARM_BACKEND_TIMEOUT_SECONDS"
+
+  osascript_fallback_allowed || return 1
+
+  case "$timeout_seconds" in
+    ""|*[!0-9]*) timeout_seconds=3 ;;
+  esac
+  [ "$timeout_seconds" -ge 1 ] 2>/dev/null || timeout_seconds=3
+
+  case "$event" in
+    stop|permission)
+      [ "$timeout_seconds" -le 4 ]
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+write_notification_jxa() {
+  cat > "$1" <<'JXA'
 ObjC.import('Foundation');
 
 function run(argv) {
@@ -196,6 +339,7 @@ function run(argv) {
   var dryRun = argv[5] === '1';
   var payloadPath = argv[6] || '';
   var notifierPath = argv[7] || '';
+  var mode = argv[8] || 'send';
   var app = Application.currentApplication();
   app.includeStandardAdditions = true;
 
@@ -274,12 +418,23 @@ function run(argv) {
       typeof state.last_permission_time_ms === 'number' &&
       now - state.last_permission_time_ms <= 1000;
 
+    return suppress;
+  }
+
+  function rememberPermission(fingerprint) {
+    if (event !== 'permission' || !alarmHome || dryRun) return;
+    var path = statePath();
+    var state = {};
+    try {
+      state = JSON.parse(readText(path) || '{}');
+    } catch (error) {
+      state = {};
+    }
     state.last_permission_fingerprint = fingerprint;
-    state.last_permission_time_ms = now;
+    state.last_permission_time_ms = Date.now();
     try {
       writeText(path, JSON.stringify(state, null, 2) + '\n');
     } catch (error) {}
-    return suppress;
   }
 
   function send(title, body) {
@@ -292,7 +447,7 @@ function run(argv) {
         activateBundleId: bundleId,
         sound: sound
       }));
-      return;
+      return true;
     }
 
     if (backend === 'terminal-notifier' && notifierPath) {
@@ -304,17 +459,56 @@ function run(argv) {
       if (bundleId) command += ' -activate ' + shellQuote(bundleId);
       try {
         app.doShellScript(command);
-        return;
-      } catch (error) {}
+        return true;
+      } catch (error) {
+        console.log('ERROR terminal-notifier failed: ' + error);
+      }
     }
 
     try {
       app.displayNotification(body, { withTitle: title, soundName: sound });
-    } catch (error) {
+      return true;
+    } catch (errorWithSound) {
+      console.log('ERROR osascript notification with sound failed: ' + errorWithSound);
       try {
         app.displayNotification(body, { withTitle: title });
-      } catch (ignored) {}
+        return true;
+      } catch (errorWithoutSound) {
+        console.log('ERROR osascript notification failed: ' + errorWithoutSound);
+        return false;
+      }
     }
+  }
+
+  function mustSend(title, body) {
+    if (!send(title, body)) {
+      throw new Error('notification backend failed');
+    }
+  }
+
+  function preparedPath(name) {
+    return notifierPath.replace(/\/+$/, '') + '/' + name;
+  }
+
+  function prepareNotification(title, body, fingerprint, project, detail, toolName) {
+    if (!notifierPath) throw new Error('prepare output directory missing');
+    writeText(preparedPath('suppressed'), '0\n');
+    writeText(preparedPath('title'), title);
+    writeText(preparedPath('body'), body);
+    writeText(preparedPath('fingerprint'), fingerprint || '');
+    writeText(preparedPath('project'), project || '');
+    writeText(preparedPath('detail'), detail || '');
+    writeText(preparedPath('tool'), toolName || '');
+  }
+
+  function prepareSuppressed() {
+    if (!notifierPath) throw new Error('prepare output directory missing');
+    writeText(preparedPath('suppressed'), '1\n');
+  }
+
+  if (mode === 'remember') {
+    rememberPermission(payloadPath);
+    return;
   }
 
   var payload = parsePayload(readText(payloadPath));
@@ -330,28 +524,284 @@ function run(argv) {
     detail = truncate(detail, 120);
     title = 'Codex needs approval';
     var fingerprint = ['permission', toolName, detail].join('|');
-    if (shouldSuppressPermission(fingerprint)) return;
-    send(title, folder + ': ' + detail);
+    if (shouldSuppressPermission(fingerprint)) {
+      if (mode === 'prepare') prepareSuppressed();
+      return;
+    }
+    if (mode === 'prepare') {
+      prepareNotification(title, folder + ': ' + detail, fingerprint, folder, detail, toolName);
+      return;
+    }
+    mustSend(title, folder + ': ' + detail);
+    rememberPermission(fingerprint);
     return;
   }
 
   if (event === 'stop') {
     detail = pick(payload, ['last_assistant_message', 'last-assistant-message', 'lastAssistantMessage']);
     detail = truncate(detail || 'Waiting for your next instruction', 120);
-    send('Codex finished', folder + ': ' + detail);
+    if (mode === 'prepare') {
+      prepareNotification('Codex finished', folder + ': ' + detail, '', folder, detail, '');
+      return;
+    }
+    mustSend('Codex finished', folder + ': ' + detail);
     return;
   }
 
   if (event === 'test-permission') {
-    send('Codex needs approval', folder + ': Test approval request');
+    if (mode === 'prepare') {
+      prepareNotification('Codex needs approval', folder + ': Test approval request', '', folder, 'Test approval request', '');
+      return;
+    }
+    mustSend('Codex needs approval', folder + ': Test approval request');
     return;
   }
 
-  send('Codex Alarm test', folder + ': Notifications are working');
+  if (mode === 'prepare') {
+    prepareNotification('Codex Alarm test', folder + ': Notifications are working', '', folder, 'Notifications are working', '');
+    return;
+  }
+  mustSend('Codex Alarm test', folder + ': Notifications are working');
 }
 JXA
+}
+
+run_notification_once() {
+  local event="$1"
+  local backend="$2"
+  local bundle_id="$3"
+  local payload_file="$4"
+  local notifier_path="$5"
+  local dry_run="$6"
+  local output_file script_file prepare_dir status message title body fingerprint suppressed remember_output project detail tool
+  local -a notifier_args
+
+  output_file="${TMPDIR:-/tmp}/codex-alarm-backend.$$.$event.$backend.log"
+  script_file="${TMPDIR:-/tmp}/codex-alarm-backend.$$.$event.$backend.js"
+  if ! write_notification_jxa "$script_file" 2>/dev/null; then
+    log_message "backend=$backend event=$event failed to prepare notification script"
+    return 1
+  fi
+
+  if [ "$backend" = "terminal-notifier" ] && [ "$dry_run" != "1" ]; then
+    prepare_dir="${TMPDIR:-/tmp}/codex-alarm-prepare.$$.$event.$backend"
+    mkdir -p "$prepare_dir" 2>/dev/null || true
+    run_with_timeout "$CODEX_ALARM_BACKEND_TIMEOUT_SECONDS" "$output_file" \
+      /usr/bin/osascript -l JavaScript "$script_file" "$event" "$backend" "$bundle_id" "$CODEX_ALARM_SOUND" "$CODEX_ALARM_HOME" "$dry_run" "$payload_file" "$prepare_dir" "prepare"
+    status=$?
+
+    if [ "$status" -eq 0 ]; then
+      suppressed="$(cat "$prepare_dir/suppressed" 2>/dev/null || true)"
+      if [ "$suppressed" = "1" ]; then
+        rm -rf "$prepare_dir" 2>/dev/null || true
+        rm -f "$output_file" "$script_file" 2>/dev/null || true
+        return 0
+      fi
+
+      title="$(cat "$prepare_dir/title" 2>/dev/null || true)"
+      body="$(cat "$prepare_dir/body" 2>/dev/null || true)"
+      fingerprint="$(cat "$prepare_dir/fingerprint" 2>/dev/null || true)"
+      project="$(cat "$prepare_dir/project" 2>/dev/null || true)"
+      detail="$(cat "$prepare_dir/detail" 2>/dev/null || true)"
+      tool="$(cat "$prepare_dir/tool" 2>/dev/null || true)"
+      if [ -z "$title" ] || [ -z "$body" ]; then
+        status=1
+        printf '%s\n' "prepared notification was incomplete" >> "$output_file" 2>/dev/null || true
+      else
+        log_notification_attempt "$event" "$backend" "$project" "$tool" "$detail"
+        notifier_args=(-title "$title" -message "$body" -group "codex-alarm-$event")
+        [ -n "$CODEX_ALARM_SOUND" ] && notifier_args+=(-sound "$CODEX_ALARM_SOUND")
+        [ -n "$bundle_id" ] && notifier_args+=(-activate "$bundle_id")
+        run_process_group_with_timeout "$CODEX_ALARM_BACKEND_TIMEOUT_SECONDS" "$output_file" \
+          "$notifier_path" "${notifier_args[@]}"
+        status=$?
+
+        if [ "$status" -eq 0 ] && [ "$event" = "permission" ] && [ -n "$fingerprint" ]; then
+          remember_output="${TMPDIR:-/tmp}/codex-alarm-backend.$$.$event.remember.log"
+          run_with_timeout "$CODEX_ALARM_BACKEND_TIMEOUT_SECONDS" "$remember_output" \
+            /usr/bin/osascript -l JavaScript "$script_file" "$event" "$backend" "$bundle_id" "$CODEX_ALARM_SOUND" "$CODEX_ALARM_HOME" "$dry_run" "$fingerprint" "" "remember" || true
+          rm -f "$remember_output" 2>/dev/null || true
+        fi
+      fi
+    fi
+
+    rm -rf "$prepare_dir" 2>/dev/null || true
+  else
+    if [ "$dry_run" != "1" ]; then
+      case "$event" in
+        stop|permission)
+          prepare_dir="${TMPDIR:-/tmp}/codex-alarm-prepare.$$.$event.$backend"
+          mkdir -p "$prepare_dir" 2>/dev/null || true
+          run_with_timeout "$CODEX_ALARM_BACKEND_TIMEOUT_SECONDS" "$output_file" \
+            /usr/bin/osascript -l JavaScript "$script_file" "$event" "$backend" "$bundle_id" "$CODEX_ALARM_SOUND" "$CODEX_ALARM_HOME" "$dry_run" "$payload_file" "$prepare_dir" "prepare"
+          status=$?
+          if [ "$status" -eq 0 ]; then
+            suppressed="$(cat "$prepare_dir/suppressed" 2>/dev/null || true)"
+            if [ "$suppressed" = "1" ]; then
+              rm -rf "$prepare_dir" 2>/dev/null || true
+              rm -f "$output_file" "$script_file" 2>/dev/null || true
+              return 0
+            fi
+            project="$(cat "$prepare_dir/project" 2>/dev/null || true)"
+            detail="$(cat "$prepare_dir/detail" 2>/dev/null || true)"
+            tool="$(cat "$prepare_dir/tool" 2>/dev/null || true)"
+            log_notification_attempt "$event" "$backend" "$project" "$tool" "$detail"
+          else
+            rm -rf "$prepare_dir" 2>/dev/null || true
+            if [ "$status" -eq 124 ]; then
+              message="backend=$backend event=$event timed out after ${CODEX_ALARM_BACKEND_TIMEOUT_SECONDS}s"
+            else
+              message="backend=$backend event=$event failed with exit $status"
+            fi
+            log_message "$message"
+            rm -f "$output_file" "$script_file" 2>/dev/null || true
+            return "$status"
+          fi
+          rm -rf "$prepare_dir" 2>/dev/null || true
+          ;;
+      esac
+    fi
+
+    run_with_timeout "$CODEX_ALARM_BACKEND_TIMEOUT_SECONDS" "$output_file" \
+      /usr/bin/osascript -l JavaScript "$script_file" "$event" "$backend" "$bundle_id" "$CODEX_ALARM_SOUND" "$CODEX_ALARM_HOME" "$dry_run" "$payload_file" "$notifier_path" "send"
+    status=$?
+  fi
+
+  if should_print_backend_output "$event"; then
+    cat "$output_file" 2>/dev/null || true
+  fi
+
+  if [ "$status" -ne 0 ]; then
+    if [ "$status" -eq 124 ]; then
+      message="backend=$backend event=$event timed out after ${CODEX_ALARM_BACKEND_TIMEOUT_SECONDS}s"
+    else
+      message="backend=$backend event=$event failed with exit $status"
+    fi
+    log_message "$message"
+    if [ -s "$output_file" ]; then
+      while IFS= read -r line || [ -n "$line" ]; do
+        log_message "backend output: $line"
+      done < "$output_file"
+    fi
+    if should_print_backend_output "$event"; then
+      echo "ERROR $message" >&2
+      echo "See $CODEX_ALARM_HOME/alarm.log for details." >&2
+    fi
+  fi
+
+  rm -f "$output_file" 2>/dev/null || true
+  rm -f "$script_file" 2>/dev/null || true
+  return "$status"
+}
+
+run_notification() {
+  local event="$1"
+  local payload_file backend bundle_id notifier_path dry_run status primary_status fallback_status fallback_reason
+
+  case "$event" in
+    stop)
+      [ "$CODEX_ALARM_NOTIFY_ON_STOP" = "1" ] || return 0
+      ;;
+    permission)
+      [ "$CODEX_ALARM_NOTIFY_ON_PERMISSION" = "1" ] || return 0
+      ;;
+  esac
+
+  if ! command_exists /usr/bin/osascript; then
+    log_message "backend unavailable: /usr/bin/osascript missing"
+    if should_print_backend_output "$event"; then
+      echo "ERROR backend unavailable: /usr/bin/osascript missing" >&2
+    fi
+    return 1
+  fi
+
+  mkdir -p "$CODEX_ALARM_HOME" 2>/dev/null || true
+
+  payload_file="${TMPDIR:-/tmp}/codex-alarm-payload.$$"
+  cat > "$payload_file" 2>/dev/null || payload_file=""
+
+  backend="$(resolve_backend)"
+  bundle_id="$(detect_bundle_id)"
+  notifier_path=""
+  if [ "$backend" = "terminal-notifier" ]; then
+    notifier_path="$(command -v terminal-notifier 2>/dev/null || true)"
+    if [ -z "$notifier_path" ]; then
+      log_message "backend=terminal-notifier event=$event unavailable: terminal-notifier not found"
+      if osascript_fallback_allowed; then
+        log_message "event=$event primary_backend=terminal-notifier fallback_backend=osascript fallback_attempt=1 reason=missing"
+        if should_print_backend_output "$event"; then
+          echo "WARN terminal-notifier not found; retrying osascript fallback." >&2
+        fi
+        run_notification_once "$event" "osascript" "$bundle_id" "$payload_file" "" "${CODEX_ALARM_DRY_RUN:-0}"
+        fallback_status=$?
+        if should_print_backend_output "$event" && [ "$fallback_status" -eq 0 ]; then
+          echo "WARN osascript fallback delivered after primary backend terminal-notifier was unavailable; alarm test will still fail." >&2
+        fi
+        [ -n "$payload_file" ] && rm -f "$payload_file" 2>/dev/null || true
+        if is_test_event "$event"; then
+          return 1
+        fi
+        return "$fallback_status"
+      else
+        if should_print_backend_output "$event"; then
+          echo "ERROR backend=terminal-notifier event=$event unavailable: terminal-notifier not found" >&2
+          echo "ERROR osascript fallback is disabled by CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK=0." >&2
+          echo "See $CODEX_ALARM_HOME/alarm.log for details." >&2
+        fi
+        [ -n "$payload_file" ] && rm -f "$payload_file" 2>/dev/null || true
+        return 1
+      fi
+    fi
+  fi
+  dry_run="${CODEX_ALARM_DRY_RUN:-0}"
+
+  run_notification_once "$event" "$backend" "$bundle_id" "$payload_file" "$notifier_path" "$dry_run"
+  status=$?
+
+  if [ "$status" -ne 0 ] && [ "$backend" = "terminal-notifier" ]; then
+    if ! osascript_fallback_allowed; then
+      log_message "backend=terminal-notifier event=$event failed; osascript fallback disabled"
+      if should_print_backend_output "$event"; then
+        echo "ERROR osascript fallback is disabled by CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK=0." >&2
+        echo "See $CODEX_ALARM_HOME/alarm.log for details." >&2
+      fi
+    elif should_retry_osascript_fallback "$event"; then
+      primary_status=$status
+      if [ "$status" -eq 124 ]; then
+        fallback_reason="timed out"
+        log_message "event=$event primary_backend=terminal-notifier fallback_backend=osascript fallback_attempt=1 reason=timeout"
+      else
+        fallback_reason="failed"
+        log_message "event=$event primary_backend=terminal-notifier fallback_backend=osascript fallback_attempt=1 reason=failed"
+      fi
+      if should_print_backend_output "$event"; then
+        if [ "$status" -eq 124 ]; then
+          echo "WARN terminal-notifier timed out; retrying osascript fallback." >&2
+        else
+          echo "WARN terminal-notifier failed; retrying osascript fallback." >&2
+        fi
+      fi
+      run_notification_once "$event" "osascript" "$bundle_id" "$payload_file" "" "$dry_run"
+      fallback_status=$?
+      if should_print_backend_output "$event"; then
+        if [ "$fallback_status" -eq 0 ]; then
+          echo "WARN osascript fallback delivered after primary backend terminal-notifier $fallback_reason; alarm test will still fail." >&2
+        else
+          echo "ERROR osascript fallback also failed after primary backend terminal-notifier $fallback_reason." >&2
+        fi
+      fi
+      if is_test_event "$event"; then
+        status=$primary_status
+      else
+        status=$fallback_status
+      fi
+    else
+      log_message "backend=terminal-notifier event=$event timed out; skipping osascript fallback to stay within hook timeout"
+    fi
+  fi
 
   [ -n "$payload_file" ] && rm -f "$payload_file" 2>/dev/null || true
+  return "$status"
 }
 
 doctor() {
@@ -381,6 +831,10 @@ doctor() {
   echo "notify on permission: $CODEX_ALARM_NOTIFY_ON_PERMISSION"
   echo "sound: $CODEX_ALARM_SOUND"
   echo "activate bundle ID: ${bundle_id:-<not configured>}"
+  echo "backend timeout seconds: $CODEX_ALARM_BACKEND_TIMEOUT_SECONDS"
+  echo "osascript fallback: $([ "$CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK" = "1" ] && echo enabled || echo disabled)"
+  echo "log file: $CODEX_ALARM_HOME/alarm.log"
+  echo "hooks scope: user-level global hooks may notify from any active Codex session using $CODEX_HOME"
 
   if [ -n "$CONFIG_ERROR" ]; then
     echo "ERROR config invalid: $CONFIG_ERROR"
@@ -397,7 +851,20 @@ doctor() {
   if command_exists terminal-notifier; then
     echo "terminal-notifier: found"
   else
-    echo "WARN terminal-notifier missing: click-to-focus unavailable"
+    if [ "$backend" = "terminal-notifier" ]; then
+      echo "WARN terminal-notifier missing: default notification backend unavailable"
+    else
+      echo "WARN terminal-notifier missing: click-to-focus unavailable"
+    fi
+    echo "Install manually with: brew install terminal-notifier"
+  fi
+
+  if [ "$backend" = "osascript" ]; then
+    echo "WARN osascript backend: notification identity and click-to-focus are degraded"
+  fi
+
+  if osascript_fallback_allowed; then
+    echo "WARN osascript fallback enabled: terminal-notifier failures may produce generic script-identity notifications"
   fi
 
   if command_exists codex; then
@@ -522,17 +989,20 @@ apply_env_overrides
 
 case "${1-}" in
   stop)
-    run_notification stop
+    run_notification stop || true
     exit 0
     ;;
   permission)
-    run_notification permission
+    run_notification permission || true
     exit 0
     ;;
   test)
-    printf '' | run_notification test
+    test_status=0
+    echo "Codex Alarm test: osascript fallback $([ "$CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK" = "1" ] && echo enabled || echo disabled)"
+    printf '' | run_notification test || test_status=1
     sleep 1
-    printf '' | run_notification test-permission
+    printf '' | run_notification test-permission || test_status=1
+    exit "$test_status"
     ;;
   doctor)
     doctor

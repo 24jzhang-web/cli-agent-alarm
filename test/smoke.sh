@@ -11,19 +11,33 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 export CODEX_HOME="$TMP_ROOT/codex"
 export CODEX_ALARM_HOME="$CODEX_HOME/alarm"
 export CODEX_ALARM_DRY_RUN=1
+mkdir -p "$TMP_ROOT/bin"
+notifier_log="$TMP_ROOT/terminal-notifier.log"
+printf '#!/bin/sh\nprintf "notify\\n" >> "%s"\n' "$notifier_log" > "$TMP_ROOT/bin/terminal-notifier"
+chmod +x "$TMP_ROOT/bin/terminal-notifier"
 
 line_count() {
   wc -l < "$1" | tr -d '[:space:]'
 }
 
 echo "version"
-"$ROOT/bin/alarm" version | grep -q '^0\.1\.0$'
+"$ROOT/bin/alarm" version | grep -q '^1\.1\.0$'
 
 echo "test notification dry-run"
 test_log="$TMP_ROOT/alarm-test.log"
-"$ROOT/bin/alarm" test > "$test_log" 2>&1
+PATH="$TMP_ROOT/bin:/usr/bin:/bin" "$ROOT/bin/alarm" test > "$test_log" 2>&1
+grep -q 'Codex Alarm test: osascript fallback disabled' "$test_log"
 grep -q 'Codex Alarm test' "$test_log"
 grep -q 'Codex needs approval' "$test_log"
+fallback_enabled_log="$TMP_ROOT/fallback-enabled-dry-run.log"
+if PATH="/usr/bin:/bin" CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK=1 "$ROOT/bin/alarm" test > "$fallback_enabled_log" 2>&1; then
+  echo "alarm test succeeded even though the primary terminal-notifier backend was unavailable" >&2
+  exit 1
+fi
+grep -q 'Codex Alarm test: osascript fallback enabled' "$fallback_enabled_log"
+grep -q 'WARN terminal-notifier not found; retrying osascript fallback' "$fallback_enabled_log"
+grep -q '"backend":"osascript"' "$fallback_enabled_log"
+grep -q 'WARN osascript fallback delivered after primary backend terminal-notifier was unavailable; alarm test will still fail' "$fallback_enabled_log"
 
 echo "hook dry-runs"
 printf '{"cwd":"/tmp/project","last_assistant_message":"Done"}' | "$ROOT/bin/alarm" stop 2>&1 | grep -q 'Codex finished'
@@ -52,10 +66,6 @@ echo "backend and sound dry-runs"
 PATH="/usr/bin:/bin" CODEX_ALARM_BACKEND=osascript CODEX_ALARM_SOUND=Ping "$ROOT/bin/alarm" test 2>&1 | grep -q '"backend":"osascript"'
 PATH="/usr/bin:/bin" CODEX_ALARM_BACKEND=osascript CODEX_ALARM_SOUND=Ping "$ROOT/bin/alarm" test 2>&1 | grep -q '"sound":"Ping"'
 
-mkdir -p "$TMP_ROOT/bin"
-notifier_log="$TMP_ROOT/terminal-notifier.log"
-printf '#!/bin/sh\nprintf "notify\\n" >> "%s"\n' "$notifier_log" > "$TMP_ROOT/bin/terminal-notifier"
-chmod +x "$TMP_ROOT/bin/terminal-notifier"
 PATH="$TMP_ROOT/bin:/usr/bin:/bin" CODEX_ALARM_BACKEND=auto "$ROOT/bin/alarm" test 2>&1 | grep -q '"backend":"terminal-notifier"'
 PATH="$TMP_ROOT/bin:/usr/bin:/bin" CODEX_ALARM_BACKEND=terminal-notifier CODEX_ALARM_ACTIVATE_BUNDLE_ID=com.apple.Terminal "$ROOT/bin/alarm" test 2>&1 | grep -q '"activateBundleId":"com.apple.Terminal"'
 
@@ -83,6 +93,133 @@ printf 'occupied\n' > "$state_block"
 : > "$notifier_log"
 printf '{"cwd":"/tmp/project","tool_name":"Bash","tool_input":{"description":"State failure"}}' | CODEX_HOME="$TMP_ROOT/state-codex" CODEX_ALARM_HOME="$state_block" PATH="$TMP_ROOT/bin:/usr/bin:/bin" CODEX_ALARM_BACKEND=terminal-notifier CODEX_ALARM_DRY_RUN=0 "$ROOT/bin/alarm" permission
 test "$(line_count "$notifier_log")" = "1"
+
+echo "hook audit logging"
+audit_home="$TMP_ROOT/audit-codex/alarm"
+audit_stop_out="$TMP_ROOT/audit-stop.out"
+audit_stop_err="$TMP_ROOT/audit-stop.err"
+audit_permission_out="$TMP_ROOT/audit-permission.out"
+audit_permission_err="$TMP_ROOT/audit-permission.err"
+mkdir -p "$audit_home"
+: > "$notifier_log"
+printf '{"cwd":"/tmp/project-alpha","last_assistant_message":"Done now"}' | CODEX_ALARM_HOME="$audit_home" PATH="$TMP_ROOT/bin:/usr/bin:/bin" CODEX_ALARM_BACKEND=terminal-notifier CODEX_ALARM_DRY_RUN=0 "$ROOT/bin/alarm" stop > "$audit_stop_out" 2> "$audit_stop_err"
+test ! -s "$audit_stop_out"
+test ! -s "$audit_stop_err"
+grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[-+][0-9]{4} event=stop backend=terminal-notifier project=project-alpha tool=- detail=Done now$' "$audit_home/alarm.log"
+printf '{"cwd":"/tmp/project-alpha","tool_name":"Bash","tool_input":{"description":"Run tests"}}' | CODEX_ALARM_HOME="$audit_home" PATH="$TMP_ROOT/bin:/usr/bin:/bin" CODEX_ALARM_BACKEND=terminal-notifier CODEX_ALARM_DRY_RUN=0 "$ROOT/bin/alarm" permission > "$audit_permission_out" 2> "$audit_permission_err"
+test ! -s "$audit_permission_out"
+test ! -s "$audit_permission_err"
+grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[-+][0-9]{4} event=permission backend=terminal-notifier project=project-alpha tool=Bash detail=Run tests$' "$audit_home/alarm.log"
+
+echo "hung backend cleanup"
+hung_bin="$TMP_ROOT/hung-bin"
+hung_home="$TMP_ROOT/hung-codex/alarm"
+hung_notifier_pid="$TMP_ROOT/hung-notifier.pid"
+hung_child_pid="$TMP_ROOT/hung-child.pid"
+hung_stop_out="$TMP_ROOT/hung-stop.out"
+hung_stop_err="$TMP_ROOT/hung-stop.err"
+hung_permission_out="$TMP_ROOT/hung-permission.out"
+hung_permission_err="$TMP_ROOT/hung-permission.err"
+hung_test_home="$TMP_ROOT/hung-test-codex/alarm"
+hung_test_out="$TMP_ROOT/hung-test.out"
+hung_test_err="$TMP_ROOT/hung-test.err"
+mkdir -p "$hung_bin" "$hung_home"
+cat > "$hung_bin/terminal-notifier" <<EOF
+#!/bin/sh
+printf '%s\n' "\$\$" >> "$hung_notifier_pid"
+sleep 20 &
+printf '%s\n' "\$!" >> "$hung_child_pid"
+wait
+EOF
+chmod +x "$hung_bin/terminal-notifier"
+mkdir -p "$hung_test_home"
+if CODEX_ALARM_HOME="$hung_test_home" PATH="$hung_bin:/usr/bin:/bin" CODEX_ALARM_BACKEND=terminal-notifier CODEX_ALARM_BACKEND_TIMEOUT_SECONDS=1 CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK=0 CODEX_ALARM_DRY_RUN=0 "$ROOT/bin/alarm" test > "$hung_test_out" 2> "$hung_test_err"; then
+  echo "alarm test succeeded even though terminal-notifier timed out" >&2
+  exit 1
+fi
+grep -q 'Codex Alarm test: osascript fallback disabled' "$hung_test_out"
+grep -q 'ERROR backend=terminal-notifier event=test timed out after 1s' "$hung_test_err"
+grep -q 'ERROR osascript fallback is disabled by CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK=0' "$hung_test_err"
+grep -q "See $hung_test_home/alarm.log for details." "$hung_test_err"
+grep -q 'backend=terminal-notifier event=test timed out after 1s' "$hung_test_home/alarm.log"
+grep -q 'backend=terminal-notifier event=test failed; osascript fallback disabled' "$hung_test_home/alarm.log"
+
+printf '{"cwd":"/tmp/project","last_assistant_message":"Done"}' | CODEX_ALARM_HOME="$hung_home" PATH="$hung_bin:/usr/bin:/bin" CODEX_ALARM_BACKEND=terminal-notifier CODEX_ALARM_BACKEND_TIMEOUT_SECONDS=3 CODEX_ALARM_DRY_RUN=0 "$ROOT/bin/alarm" stop > "$hung_stop_out" 2> "$hung_stop_err"
+test ! -s "$hung_stop_out"
+test ! -s "$hung_stop_err"
+grep -q 'backend=terminal-notifier event=stop timed out after 3s' "$hung_home/alarm.log"
+grep -q 'event=stop backend=terminal-notifier project=project tool=- detail=Done' "$hung_home/alarm.log"
+grep -q 'backend=terminal-notifier event=stop failed; osascript fallback disabled' "$hung_home/alarm.log"
+if grep -q 'fallback_backend=osascript' "$hung_home/alarm.log"; then
+  echo "osascript fallback ran even though it is disabled by default" >&2
+  exit 1
+fi
+notifier_pid="$(tail -n 1 "$hung_notifier_pid")"
+child_pid="$(tail -n 1 "$hung_child_pid")"
+sleep 0.5
+if ps -p "$notifier_pid" >/dev/null 2>&1; then
+  echo "hung terminal-notifier process was not cleaned up" >&2
+  exit 1
+fi
+if ps -p "$child_pid" >/dev/null 2>&1; then
+  echo "hung terminal-notifier child process was not cleaned up" >&2
+  exit 1
+fi
+
+printf '{"cwd":"/tmp/project","tool_name":"Bash","tool_input":{"description":"Hung approval"}}' | CODEX_ALARM_HOME="$hung_home" PATH="$hung_bin:/usr/bin:/bin" CODEX_ALARM_BACKEND=terminal-notifier CODEX_ALARM_BACKEND_TIMEOUT_SECONDS=3 CODEX_ALARM_DRY_RUN=0 "$ROOT/bin/alarm" permission > "$hung_permission_out" 2> "$hung_permission_err"
+test ! -s "$hung_permission_out"
+test ! -s "$hung_permission_err"
+grep -q 'backend=terminal-notifier event=permission timed out after 3s' "$hung_home/alarm.log"
+grep -q 'event=permission backend=terminal-notifier project=project tool=Bash detail=Hung approval' "$hung_home/alarm.log"
+grep -q 'backend=terminal-notifier event=permission failed; osascript fallback disabled' "$hung_home/alarm.log"
+if grep -q 'fallback_backend=osascript' "$hung_home/alarm.log"; then
+  echo "permission osascript fallback ran even though it is disabled by default" >&2
+  exit 1
+fi
+notifier_pid="$(tail -n 1 "$hung_notifier_pid")"
+child_pid="$(tail -n 1 "$hung_child_pid")"
+sleep 0.5
+if ps -p "$notifier_pid" >/dev/null 2>&1; then
+  echo "hung permission terminal-notifier process was not cleaned up" >&2
+  exit 1
+fi
+if ps -p "$child_pid" >/dev/null 2>&1; then
+  echo "hung permission terminal-notifier child process was not cleaned up" >&2
+  exit 1
+fi
+
+echo "osascript fallback policy"
+fallback_bin="$TMP_ROOT/fallback-bin"
+fallback_home="$TMP_ROOT/fallback-codex/alarm"
+fallback_test_out="$TMP_ROOT/fallback-test.out"
+fallback_test_err="$TMP_ROOT/fallback-test.err"
+fallback_stop_out="$TMP_ROOT/fallback-stop.out"
+fallback_stop_err="$TMP_ROOT/fallback-stop.err"
+mkdir -p "$fallback_bin" "$fallback_home"
+cat > "$fallback_bin/terminal-notifier" <<'EOF'
+#!/bin/sh
+exit 42
+EOF
+chmod +x "$fallback_bin/terminal-notifier"
+if CODEX_ALARM_HOME="$fallback_home" PATH="$fallback_bin:/usr/bin:/bin" CODEX_ALARM_BACKEND=terminal-notifier CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK=0 CODEX_ALARM_DRY_RUN=0 "$ROOT/bin/alarm" test > "$fallback_test_out" 2> "$fallback_test_err"; then
+  echo "alarm test succeeded even though terminal-notifier failed and fallback was disabled" >&2
+  exit 1
+fi
+grep -q 'Codex Alarm test: osascript fallback disabled' "$fallback_test_out"
+grep -q 'ERROR osascript fallback is disabled by CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK=0' "$fallback_test_err"
+grep -q "See $fallback_home/alarm.log for details." "$fallback_test_err"
+grep -q 'backend=terminal-notifier event=test failed with exit 42' "$fallback_home/alarm.log"
+grep -q 'backend=terminal-notifier event=test failed; osascript fallback disabled' "$fallback_home/alarm.log"
+if grep -q 'fallback_backend=osascript' "$fallback_home/alarm.log"; then
+  echo "osascript fallback ran even though it was disabled" >&2
+  exit 1
+fi
+
+printf '{"cwd":"/tmp/project","last_assistant_message":"Done"}' | CODEX_ALARM_HOME="$fallback_home" PATH="$fallback_bin:/usr/bin:/bin" CODEX_ALARM_BACKEND=terminal-notifier CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK=0 CODEX_ALARM_DRY_RUN=0 "$ROOT/bin/alarm" stop > "$fallback_stop_out" 2> "$fallback_stop_err"
+test ! -s "$fallback_stop_out"
+test ! -s "$fallback_stop_err"
+grep -q 'backend=terminal-notifier event=stop failed with exit 42' "$fallback_home/alarm.log"
+grep -q 'backend=terminal-notifier event=stop failed; osascript fallback disabled' "$fallback_home/alarm.log"
 
 echo "install dry-run"
 dry_codex_home="$TMP_ROOT/dry-codex"
@@ -174,6 +311,8 @@ chmod +x "$install_path/brew"
 PATH="$install_path:/usr/bin:/bin" CODEX_HOME="$install_codex_home" CODEX_ALARM_HOME="$install_alarm_home" "$ROOT/install.sh" --yes
 test -x "$install_alarm_home/alarm"
 grep -q 'CODEX_ALARM_SOUND="Submarine"' "$install_alarm_home/config"
+grep -q 'CODEX_ALARM_BACKEND_TIMEOUT_SECONDS="3"' "$install_alarm_home/config"
+grep -q 'CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK="0"' "$install_alarm_home/config"
 test "$(find "$install_codex_home" -name 'hooks.json.codex-alarm-backup-*' -type f | wc -l | tr -d '[:space:]')" = "1"
 grep -q 'Keep stop' "$install_codex_home/hooks.json"
 grep -q 'Keep other' "$install_codex_home/hooks.json"
@@ -183,6 +322,7 @@ if grep -q 'old stop\|old permission\|old other event' "$install_codex_home/hook
 fi
 test "$(grep -c 'Codex Alarm: notifying completion' "$install_codex_home/hooks.json")" = "1"
 test "$(grep -c 'Codex Alarm: notifying approval request' "$install_codex_home/hooks.json")" = "1"
+test "$(grep -c '"timeout": 10' "$install_codex_home/hooks.json")" = "2"
 test ! -e "$install_brew_log"
 
 echo "doctor"
@@ -190,7 +330,7 @@ doctor_log="$TMP_ROOT/doctor.log"
 cp "$install_codex_home/hooks.json" "$TMP_ROOT/hooks-before-doctor.json"
 cp "$install_alarm_home/config" "$TMP_ROOT/config-before-doctor"
 PATH="/usr/bin:/bin" CODEX_HOME="$install_codex_home" CODEX_ALARM_HOME="$install_alarm_home" CODEX_ALARM_ACTIVATE_BUNDLE_ID='' "$install_alarm_home/alarm" doctor > "$doctor_log" 2>&1
-grep -q 'version: 0.1.0' "$doctor_log"
+grep -q 'version: 1.1.0' "$doctor_log"
 grep -q 'platform: macOS supported' "$doctor_log"
 grep -q 'local-only: no telemetry, no network requests' "$doctor_log"
 grep -q "CODEX_HOME: $install_codex_home" "$doctor_log"
@@ -198,12 +338,25 @@ grep -q "CODEX_ALARM_HOME: $install_alarm_home" "$doctor_log"
 grep -q "config file: $install_alarm_home/config" "$doctor_log"
 grep -q "hooks file: $install_codex_home/hooks.json" "$doctor_log"
 grep -q 'backend configured: auto' "$doctor_log"
-grep -q 'backend resolved: osascript' "$doctor_log"
+grep -q 'backend resolved: terminal-notifier' "$doctor_log"
 grep -q 'notify on stop: 1' "$doctor_log"
 grep -q 'notify on permission: 1' "$doctor_log"
 grep -q 'sound: Submarine' "$doctor_log"
 grep -q 'activate bundle ID: <not configured>' "$doctor_log"
-grep -q 'WARN terminal-notifier missing' "$doctor_log"
+grep -q 'backend timeout seconds: 3' "$doctor_log"
+grep -q 'osascript fallback: disabled' "$doctor_log"
+grep -q "log file: $install_alarm_home/alarm.log" "$doctor_log"
+grep -q "hooks scope: user-level global hooks may notify from any active Codex session using $install_codex_home" "$doctor_log"
+grep -q 'WARN terminal-notifier missing: default notification backend unavailable' "$doctor_log"
+grep -q 'Install manually with: brew install terminal-notifier' "$doctor_log"
+if grep -q 'WARN osascript backend: notification identity and click-to-focus are degraded' "$doctor_log"; then
+  echo "doctor warned about osascript backend even though auto selected terminal-notifier" >&2
+  exit 1
+fi
+if grep -q 'WARN osascript fallback enabled' "$doctor_log"; then
+  echo "doctor warned that osascript fallback is enabled unexpectedly" >&2
+  exit 1
+fi
 grep -q 'WARN codex not found on PATH' "$doctor_log"
 grep -q 'WARN no activate bundle ID configured' "$doctor_log"
 grep -q 'hooks.json: valid JSON' "$doctor_log"
