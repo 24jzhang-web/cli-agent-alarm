@@ -20,7 +20,10 @@ echo "version"
 "$ROOT/bin/alarm" version | grep -q '^0\.1\.0$'
 
 echo "test notification dry-run"
-"$ROOT/bin/alarm" test 2>&1 | grep -q 'Codex Alarm test'
+test_log="$TMP_ROOT/alarm-test.log"
+"$ROOT/bin/alarm" test > "$test_log" 2>&1
+grep -q 'Codex Alarm test' "$test_log"
+grep -q 'Codex needs approval' "$test_log"
 
 echo "hook dry-runs"
 printf '{"cwd":"/tmp/project","last_assistant_message":"Done"}' | "$ROOT/bin/alarm" stop 2>&1 | grep -q 'Codex finished'
