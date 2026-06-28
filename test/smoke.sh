@@ -183,7 +183,72 @@ test "$(grep -c 'Codex Alarm: notifying approval request' "$install_codex_home/h
 test ! -e "$install_brew_log"
 
 echo "doctor"
-CODEX_HOME="$install_codex_home" CODEX_ALARM_HOME="$install_alarm_home" "$install_alarm_home/alarm" doctor >/dev/null
+doctor_log="$TMP_ROOT/doctor.log"
+cp "$install_codex_home/hooks.json" "$TMP_ROOT/hooks-before-doctor.json"
+cp "$install_alarm_home/config" "$TMP_ROOT/config-before-doctor"
+PATH="/usr/bin:/bin" CODEX_HOME="$install_codex_home" CODEX_ALARM_HOME="$install_alarm_home" CODEX_ALARM_ACTIVATE_BUNDLE_ID='' "$install_alarm_home/alarm" doctor > "$doctor_log" 2>&1
+grep -q 'version: 0.1.0' "$doctor_log"
+grep -q 'platform: macOS supported' "$doctor_log"
+grep -q 'local-only: no telemetry, no network requests' "$doctor_log"
+grep -q "CODEX_HOME: $install_codex_home" "$doctor_log"
+grep -q "CODEX_ALARM_HOME: $install_alarm_home" "$doctor_log"
+grep -q "config file: $install_alarm_home/config" "$doctor_log"
+grep -q "hooks file: $install_codex_home/hooks.json" "$doctor_log"
+grep -q 'backend configured: auto' "$doctor_log"
+grep -q 'backend resolved: osascript' "$doctor_log"
+grep -q 'notify on stop: 1' "$doctor_log"
+grep -q 'notify on permission: 1' "$doctor_log"
+grep -q 'sound: Submarine' "$doctor_log"
+grep -q 'activate bundle ID: <not configured>' "$doctor_log"
+grep -q 'WARN terminal-notifier missing' "$doctor_log"
+grep -q 'WARN codex not found on PATH' "$doctor_log"
+grep -q 'WARN no activate bundle ID configured' "$doctor_log"
+grep -q 'hooks.json: valid JSON' "$doctor_log"
+grep -q 'hooks: Codex Alarm entries 2' "$doctor_log"
+grep -q 'hooks: Codex Alarm entries present' "$doctor_log"
+grep -q 'Run /hooks inside Codex' "$doctor_log"
+cmp "$install_codex_home/hooks.json" "$TMP_ROOT/hooks-before-doctor.json"
+cmp "$install_alarm_home/config" "$TMP_ROOT/config-before-doctor"
+test -x "$install_alarm_home/alarm"
+test ! -e "$install_alarm_home/state.json"
+
+echo "doctor invalid config"
+bad_doctor_codex_home="$TMP_ROOT/bad-doctor-config-codex"
+bad_doctor_alarm_home="$bad_doctor_codex_home/alarm"
+bad_doctor_log="$TMP_ROOT/doctor-bad-config.log"
+mkdir -p "$bad_doctor_alarm_home"
+cp "$ROOT/bin/alarm" "$bad_doctor_alarm_home/alarm"
+chmod +x "$bad_doctor_alarm_home/alarm"
+printf 'CODEX_ALARM_SOUND="Glass"\nBROKEN LINE\n' > "$bad_doctor_alarm_home/config"
+if PATH="/usr/bin:/bin" CODEX_HOME="$bad_doctor_codex_home" CODEX_ALARM_HOME="$bad_doctor_alarm_home" CODEX_ALARM_ACTIVATE_BUNDLE_ID='' "$bad_doctor_alarm_home/alarm" doctor > "$bad_doctor_log" 2>&1; then
+  echo "doctor succeeded with invalid config" >&2
+  exit 1
+fi
+grep -q 'ERROR config invalid:' "$bad_doctor_log"
+grep -q 'expected KEY=VALUE' "$bad_doctor_log"
+grep -q 'WARN terminal-notifier missing' "$bad_doctor_log"
+test -x "$bad_doctor_alarm_home/alarm"
+grep -q 'BROKEN LINE' "$bad_doctor_alarm_home/config"
+test ! -e "$bad_doctor_alarm_home/state.json"
+
+echo "doctor invalid hooks"
+bad_hooks_doctor_codex_home="$TMP_ROOT/bad-doctor-hooks-codex"
+bad_hooks_doctor_alarm_home="$bad_hooks_doctor_codex_home/alarm"
+bad_hooks_doctor_log="$TMP_ROOT/doctor-bad-hooks.log"
+mkdir -p "$bad_hooks_doctor_codex_home" "$bad_hooks_doctor_alarm_home"
+cp "$ROOT/bin/alarm" "$bad_hooks_doctor_alarm_home/alarm"
+chmod +x "$bad_hooks_doctor_alarm_home/alarm"
+printf 'CODEX_ALARM_SOUND="Glass"\n' > "$bad_hooks_doctor_alarm_home/config"
+printf '{' > "$bad_hooks_doctor_codex_home/hooks.json"
+if PATH="/usr/bin:/bin" CODEX_HOME="$bad_hooks_doctor_codex_home" CODEX_ALARM_HOME="$bad_hooks_doctor_alarm_home" CODEX_ALARM_ACTIVATE_BUNDLE_ID='' "$bad_hooks_doctor_alarm_home/alarm" doctor > "$bad_hooks_doctor_log" 2>&1; then
+  echo "doctor succeeded with invalid hooks JSON" >&2
+  exit 1
+fi
+grep -q 'ERROR hooks.json is invalid JSON' "$bad_hooks_doctor_log"
+test -x "$bad_hooks_doctor_alarm_home/alarm"
+grep -q 'CODEX_ALARM_SOUND="Glass"' "$bad_hooks_doctor_alarm_home/config"
+grep -q '^{$' "$bad_hooks_doctor_codex_home/hooks.json"
+test ! -e "$bad_hooks_doctor_alarm_home/state.json"
 
 echo "uninstall dry-run"
 uninstall_codex_home="$TMP_ROOT/uninstall-codex"
