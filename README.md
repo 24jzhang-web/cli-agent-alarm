@@ -92,6 +92,19 @@ osascript -e 'id of app "App Name"'
 
 macOS controls whether notifications appear as temporary banners or persistent alerts in System Settings.
 
+## Backend Behavior
+
+`CODEX_ALARM_BACKEND="auto"` uses `terminal-notifier` when it is installed and falls back to `osascript` when it is not. The fallback still sends a banner and sound, but clicking the notification will not reliably focus your terminal.
+
+You can force a backend in `~/.codex/alarm/config`:
+
+```sh
+CODEX_ALARM_BACKEND="osascript"
+CODEX_ALARM_BACKEND="terminal-notifier"
+```
+
+If `terminal-notifier` is requested but unavailable, Codex Alarm falls back to `osascript` so Codex hooks keep running silently and successfully.
+
 ## Configuration
 
 Default config:
@@ -117,6 +130,14 @@ Dry-run notification delivery:
 
 ```sh
 CODEX_ALARM_DRY_RUN=1 ~/.codex/alarm/alarm test
+```
+
+Temporary overrides are useful for quick checks:
+
+```sh
+CODEX_ALARM_SOUND="Ping" ~/.codex/alarm/alarm test
+CODEX_ALARM_BACKEND="osascript" ~/.codex/alarm/alarm test
+CODEX_ALARM_BACKEND="terminal-notifier" CODEX_ALARM_ACTIVATE_BUNDLE_ID="com.apple.Terminal" ~/.codex/alarm/alarm test
 ```
 
 ## Commands
