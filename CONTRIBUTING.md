@@ -7,8 +7,10 @@ Thanks for improving Codex Alarm.
 - Keep the runtime lightweight and auditable.
 - Avoid required package-manager dependencies.
 - Do not vendor binaries or generated executables.
+- Keep the default path local-only: no telemetry, analytics, or network calls.
 - Keep hook commands silent in normal operation.
 - Preserve conservative install and uninstall behavior.
+- Document installer, hook, config, and uninstall behavior before changing it.
 
 ## Local Checks
 
@@ -33,3 +35,5 @@ Please include:
 - whether install, uninstall, or hook behavior changed
 
 Security-sensitive changes should be small and easy to review.
+
+Do not include private Codex prompts, tokens, local hook payloads, or machine-specific paths in issues or pull requests unless they are scrubbed.

@@ -1,13 +1,13 @@
 # Codex Alarm
 
-Lightweight macOS notifications for Codex CLI.
+Lightweight local macOS banner + sound notifications for Codex CLI.
 
 Codex Alarm alerts you when Codex needs attention:
 
 - Codex finished a turn and is waiting for your next instruction.
 - Codex is waiting for approval before taking an action.
 
-It uses Codex lifecycle hooks, not terminal output scraping.
+It uses Codex lifecycle hooks, not terminal output scraping, and never approves or denies Codex actions.
 
 ## Compatibility
 
@@ -15,12 +15,12 @@ It uses Codex lifecycle hooks, not terminal output scraping.
 | --- | --- |
 | macOS | v1 target platform |
 | Codex CLI | supported through Codex hooks |
-| `terminal-notifier` | required for full click-to-focus |
-| `osascript` | built-in fallback for banner + sound |
+| `osascript` | built-in banner + sound backend |
+| `terminal-notifier` | optional, for full click-to-focus |
 
-No npm, pip, Python package, Node package, or `jq` dependency is required.
+No npm, pip, Python package, Node package, `jq`, telemetry, or network access is required.
 
-## Before Installing
+## What This Modifies
 
 Codex Alarm is local-only. It does not send telemetry and does not make network requests.
 
@@ -28,15 +28,15 @@ The installer modifies your user-level Codex setup:
 
 - installs `alarm` under `${CODEX_HOME:-~/.codex}/alarm/`
 - creates `${CODEX_HOME:-~/.codex}/alarm/config` if missing
-- writes dedupe state to `${CODEX_HOME:-~/.codex}/alarm/state.json`
+- writes dedupe state to `${CODEX_HOME:-~/.codex}/alarm/state.json` when permission notifications are sent
 - updates `${CODEX_HOME:-~/.codex}/hooks.json`
 - creates a timestamped backup beside `hooks.json` before editing it
 
-Codex will still require you to review and trust the hooks with `/hooks`.
+The hook entries run local commands on Codex lifecycle events. Codex will still require you to review and trust the hooks with `/hooks`.
 
 ## Install
 
-Clone or download this repo first so you can inspect the scripts.
+Clone or download this repo first so you can inspect the scripts before running them.
 
 ```sh
 git clone https://github.com/24jzhang-web/agent-cli-clarm.git
@@ -45,21 +45,28 @@ cd agent-cli-clarm
 ./install.sh
 ```
 
-Then restart Codex and run:
+If you downloaded a ZIP from GitHub, unzip it, open the folder in Terminal, then run the same `./install.sh --dry-run` and `./install.sh` commands.
+
+The dry run prints planned file and hook changes without writing them.
+
+## Verify Install
+
+Restart Codex, then run:
 
 ```text
 /hooks
 ```
 
-Review and trust the Codex Alarm hooks, then test notifications:
+Review and trust the Codex Alarm hooks. Then test notifications and diagnostics:
 
 ```sh
 ~/.codex/alarm/alarm test
+~/.codex/alarm/alarm doctor
 ```
 
 ## Full Click-to-Focus
 
-Banner + sound works with macOS built-in `osascript`. Clicking the banner to focus your terminal requires `terminal-notifier`.
+Banner + sound works with macOS built-in `osascript`. Clicking the banner to focus your terminal requires optional `terminal-notifier`.
 
 Install it with Homebrew:
 
@@ -164,7 +171,7 @@ Normal hook entrypoints are silent and exit successfully so they do not interfer
 ./uninstall.sh
 ```
 
-Uninstall removes only Codex Alarm hook entries and the installed alarm executable. It does not remove `terminal-notifier`.
+Uninstall removes only Codex Alarm hook entries and the installed alarm executable. It creates a hook backup before editing, leaves unrelated hooks untouched, asks before removing config, and does not remove `terminal-notifier`.
 
 ## Security
 
@@ -177,6 +184,8 @@ Before installing, inspect:
 - `uninstall.sh`
 
 Codex Alarm never auto-approves or denies Codex actions. It only sends local notifications.
+
+Codex Alarm is local-only: no telemetry, no analytics, and no network requests.
 
 Do not use pipe-to-shell install commands unless you have inspected the code and accept that risk.
 
@@ -194,9 +203,11 @@ Common checks:
 
 - Restart Codex after install.
 - Run `/hooks` and trust the Codex Alarm hooks.
+- Run `~/.codex/alarm/alarm doctor` and review any warnings.
 - Install `terminal-notifier` for click-to-focus.
 - Set `CODEX_ALARM_ACTIVATE_BUNDLE_ID` if clicking the notification does not focus your terminal.
 - Confirm macOS allows notifications for the app sending them.
+- Run `./uninstall.sh --dry-run` before uninstalling if you want to preview hook changes.
 
 ## License
 
