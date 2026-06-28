@@ -17,6 +17,11 @@ body:
       description: What should Codex Alarm do differently?
     validations:
       required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Lightweight alternative
+      description: Is there a smaller docs, config, or workflow change that would solve this?
   - type: dropdown
     id: scope
     attributes:
@@ -25,3 +30,5 @@ body:
         - Keep v1 lightweight
         - Later-version feature
         - Not sure
+    validations:
+      required: true

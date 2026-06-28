@@ -10,3 +10,4 @@ All notable changes to Codex Alarm will be documented here.
 - `terminal-notifier` support for click-to-focus.
 - `osascript` fallback for banner + sound.
 - Read-only diagnostics and smoke-test scaffolding.
+- Public README, security policy, contribution guide, changelog, and issue templates.

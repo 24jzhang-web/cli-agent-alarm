@@ -14,7 +14,7 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: macOS version, terminal app, Codex CLI version, and whether terminal-notifier is installed.
+      description: macOS version, terminal app, Codex CLI version, install method, and whether terminal-notifier is installed.
       render: text
     validations:
       required: true
@@ -24,6 +24,8 @@ body:
       label: Doctor output
       description: Paste `~/.codex/alarm/alarm doctor` output. Remove private paths if needed.
       render: text
+    validations:
+      required: true
   - type: textarea
     id: steps
     attributes:
@@ -31,3 +33,24 @@ body:
       description: How can we reproduce it?
     validations:
       required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead?
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Report safety
+      options:
+        - label: I removed tokens, private prompts, and sensitive local paths from this report.
+          required: true
