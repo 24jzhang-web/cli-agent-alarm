@@ -5,7 +5,7 @@
 VERSION="0.1.0"
 
 env_was_set() {
-  eval '[ "${'"$1"'+x}" = "x" ]'
+  [ "${!1+x}" = "x" ]
 }
 
 ORIG_BACKEND="${CODEX_ALARM_BACKEND-}"
@@ -28,6 +28,11 @@ CODEX_ALARM_ACTIVATE_BUNDLE_ID=""
 CODEX_ALARM_SOUND="Glass"
 CODEX_ALARM_NOTIFY_ON_STOP="1"
 CODEX_ALARM_NOTIFY_ON_PERMISSION="1"
+CONFIG_ERROR=""
+
+set_config_error() {
+  [ -n "$CONFIG_ERROR" ] || CONFIG_ERROR="$1"
+}
 
 trim() {
   local value="$1"
@@ -51,22 +56,54 @@ strip_quotes() {
 load_config() {
   [ -f "$CONFIG_FILE" ] || return 0
 
-  local line key value
+  local line key value line_number=0
   while IFS= read -r line || [ -n "$line" ]; do
+    line_number=$((line_number + 1))
     line="${line%%#*}"
     line="$(trim "$line")"
     [ -n "$line" ] || continue
-    [[ "$line" == *=* ]] || continue
+    if [[ "$line" != *=* ]]; then
+      set_config_error "$CONFIG_FILE:$line_number: expected KEY=VALUE"
+      continue
+    fi
     key="$(trim "${line%%=*}")"
     value="$(trim "${line#*=}")"
     value="$(strip_quotes "$value")"
+    if [ -z "$key" ]; then
+      set_config_error "$CONFIG_FILE:$line_number: missing key"
+      continue
+    fi
 
     case "$key" in
-      CODEX_ALARM_BACKEND) CODEX_ALARM_BACKEND="$value" ;;
+      CODEX_ALARM_BACKEND)
+        case "$value" in
+          auto|terminal-notifier|osascript) CODEX_ALARM_BACKEND="$value" ;;
+          *)
+            set_config_error "$CONFIG_FILE:$line_number: invalid CODEX_ALARM_BACKEND '$value'"
+            CODEX_ALARM_BACKEND="$value"
+            ;;
+        esac
+        ;;
       CODEX_ALARM_ACTIVATE_BUNDLE_ID) CODEX_ALARM_ACTIVATE_BUNDLE_ID="$value" ;;
       CODEX_ALARM_SOUND) CODEX_ALARM_SOUND="$value" ;;
-      CODEX_ALARM_NOTIFY_ON_STOP) CODEX_ALARM_NOTIFY_ON_STOP="$value" ;;
-      CODEX_ALARM_NOTIFY_ON_PERMISSION) CODEX_ALARM_NOTIFY_ON_PERMISSION="$value" ;;
+      CODEX_ALARM_NOTIFY_ON_STOP)
+        case "$value" in
+          0|1) CODEX_ALARM_NOTIFY_ON_STOP="$value" ;;
+          *)
+            set_config_error "$CONFIG_FILE:$line_number: CODEX_ALARM_NOTIFY_ON_STOP must be 0 or 1"
+            CODEX_ALARM_NOTIFY_ON_STOP="$value"
+            ;;
+        esac
+        ;;
+      CODEX_ALARM_NOTIFY_ON_PERMISSION)
+        case "$value" in
+          0|1) CODEX_ALARM_NOTIFY_ON_PERMISSION="$value" ;;
+          *)
+            set_config_error "$CONFIG_FILE:$line_number: CODEX_ALARM_NOTIFY_ON_PERMISSION must be 0 or 1"
+            CODEX_ALARM_NOTIFY_ON_PERMISSION="$value"
+            ;;
+        esac
+        ;;
     esac
   done < "$CONFIG_FILE"
 }
@@ -80,6 +117,11 @@ apply_env_overrides() {
 }
 
 detect_bundle_id() {
+  if [ "$HAS_BUNDLE_ID" -eq 1 ]; then
+    printf '%s' "$CODEX_ALARM_ACTIVATE_BUNDLE_ID"
+    return 0
+  fi
+
   if [ -n "$CODEX_ALARM_ACTIVATE_BUNDLE_ID" ]; then
     printf '%s' "$CODEX_ALARM_ACTIVATE_BUNDLE_ID"
     return 0
@@ -322,14 +364,26 @@ doctor() {
   echo "Codex Alarm doctor"
   echo "version: $VERSION"
   echo "local-only: no telemetry, no network requests"
+  if [ "$(uname -s)" = "Darwin" ]; then
+    echo "platform: macOS supported"
+  else
+    echo "ERROR platform unsupported: $(uname -s)"
+    exit_code=1
+  fi
   echo "CODEX_HOME: $CODEX_HOME"
   echo "CODEX_ALARM_HOME: $CODEX_ALARM_HOME"
-  echo "backend: $backend"
+  echo "config file: $CONFIG_FILE"
+  echo "hooks file: $hooks_file"
+  echo "installed executable: $installed_path"
+  echo "backend configured: $CODEX_ALARM_BACKEND"
+  echo "backend resolved: $backend"
+  echo "notify on stop: $CODEX_ALARM_NOTIFY_ON_STOP"
+  echo "notify on permission: $CODEX_ALARM_NOTIFY_ON_PERMISSION"
   echo "sound: $CODEX_ALARM_SOUND"
   echo "activate bundle ID: ${bundle_id:-<not configured>}"
 
-  if [ "$(uname -s)" != "Darwin" ]; then
-    echo "ERROR unsupported OS: $(uname -s)"
+  if [ -n "$CONFIG_ERROR" ]; then
+    echo "ERROR config invalid: $CONFIG_ERROR"
     exit_code=1
   fi
 
@@ -353,32 +407,53 @@ doctor() {
   fi
 
   if [ -f "$CONFIG_FILE" ]; then
-    echo "config: $CONFIG_FILE"
+    echo "config: found"
   else
     echo "WARN config missing: $CONFIG_FILE"
   fi
 
   if [ -f "$installed_path" ]; then
-    echo "installed executable: $installed_path"
+    echo "installed executable status: found"
   elif [ "$0" = "$installed_path" ]; then
-    echo "ERROR installed executable missing: $installed_path"
+    echo "ERROR installed executable status: missing"
     exit_code=1
   else
-    echo "WARN installed executable not found: $installed_path"
+    echo "WARN installed executable status: not found"
   fi
 
   if [ -f "$hooks_file" ]; then
-    if /usr/bin/osascript -l JavaScript - "$hooks_file" <<'JXA' >/dev/null 2>&1
+    if hook_report="$(/usr/bin/osascript -l JavaScript - "$hooks_file" "$installed_path" 2>/dev/null <<'JXA'
 function run(argv) {
   var path = argv[0];
+  var alarmPath = argv[1] || '';
   ObjC.import('Foundation');
   var text = ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(path, $.NSUTF8StringEncoding, null));
-  JSON.parse(text || '{}');
+  var doc = JSON.parse(text || '{}');
+  var hooks = doc && doc.hooks && typeof doc.hooks === 'object' && !Array.isArray(doc.hooks) ? doc.hooks : {};
+  var alarmCount = 0;
+  Object.keys(hooks).forEach(function(eventName) {
+    var groups = Array.isArray(hooks[eventName]) ? hooks[eventName] : [];
+    groups.forEach(function(group) {
+      var entries = group && Array.isArray(group.hooks) ? group.hooks : [];
+      entries.forEach(function(hook) {
+        var command = String((hook && hook.command) || '');
+        var status = String((hook && (hook.statusMessage || hook.status_message)) || '');
+        if (status.indexOf('Codex Alarm:') === 0 ||
+            command.indexOf('/alarm/alarm') !== -1 ||
+            (alarmPath && command.indexOf(alarmPath) !== -1)) {
+          alarmCount++;
+        }
+      });
+    });
+  });
+  return 'hooks: Codex Alarm entries ' + alarmCount;
 }
 JXA
+)"
     then
       echo "hooks.json: valid JSON"
-      if grep -q "Codex Alarm:" "$hooks_file"; then
+      echo "$hook_report"
+      if [ "${hook_report##* }" != "0" ]; then
         echo "hooks: Codex Alarm entries present"
       else
         echo "WARN hooks: Codex Alarm entries not found"
