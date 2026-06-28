@@ -26,6 +26,8 @@ If ShellCheck is installed, run:
 shellcheck bin/alarm install.sh uninstall.sh test/smoke.sh
 ```
 
+Before tagging or publishing a release, run the manual checks in [docs/release-checklist.md](docs/release-checklist.md).
+
 ## Pull Requests
 
 Please include:
