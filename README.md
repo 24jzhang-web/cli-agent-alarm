@@ -74,6 +74,14 @@ Install it with Homebrew:
 brew install terminal-notifier
 ```
 
+Then run a test once so macOS can register the notification sender:
+
+```sh
+~/.codex/alarm/alarm test
+```
+
+On many Macs, `terminal-notifier` starts with notifications disabled until you allow it. Open **System Settings > Notifications > terminal-notifier** and enable notifications, banners or alerts, and sounds.
+
 Set your terminal app bundle ID in `~/.codex/alarm/config`:
 
 ```sh
@@ -205,6 +213,7 @@ Common checks:
 - Run `/hooks` and trust the Codex Alarm hooks.
 - Run `~/.codex/alarm/alarm doctor` and review any warnings.
 - Install `terminal-notifier` for click-to-focus.
+- After installing `terminal-notifier`, enable it in **System Settings > Notifications > terminal-notifier**.
 - Set `CODEX_ALARM_ACTIVATE_BUNDLE_ID` if clicking the notification does not focus your terminal.
 - Confirm macOS allows notifications for the app sending them.
 - Run `./uninstall.sh --dry-run` before uninstalling if you want to preview hook changes.
