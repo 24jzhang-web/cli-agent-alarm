@@ -205,7 +205,10 @@ grep -q 'WARN codex not found on PATH' "$doctor_log"
 grep -q 'WARN no activate bundle ID configured' "$doctor_log"
 grep -q 'hooks.json: valid JSON' "$doctor_log"
 grep -q 'hooks: Codex Alarm entries 2' "$doctor_log"
-grep -q 'hooks: Codex Alarm entries present' "$doctor_log"
+grep -q 'hooks: Stop hook entries 1' "$doctor_log"
+grep -q 'hooks: PermissionRequest hook entries 1' "$doctor_log"
+grep -q 'hooks: Codex Alarm entries found' "$doctor_log"
+grep -q 'hooks: required entries present' "$doctor_log"
 grep -q 'Run /hooks inside Codex' "$doctor_log"
 cmp "$install_codex_home/hooks.json" "$TMP_ROOT/hooks-before-doctor.json"
 cmp "$install_alarm_home/config" "$TMP_ROOT/config-before-doctor"
@@ -249,6 +252,46 @@ test -x "$bad_hooks_doctor_alarm_home/alarm"
 grep -q 'CODEX_ALARM_SOUND="Glass"' "$bad_hooks_doctor_alarm_home/config"
 grep -q '^{$' "$bad_hooks_doctor_codex_home/hooks.json"
 test ! -e "$bad_hooks_doctor_alarm_home/state.json"
+
+echo "doctor stale hook warnings"
+stale_doctor_codex_home="$TMP_ROOT/stale-doctor-codex"
+stale_doctor_alarm_home="$stale_doctor_codex_home/alarm"
+stale_doctor_log="$TMP_ROOT/doctor-stale-hooks.log"
+mkdir -p "$stale_doctor_codex_home" "$stale_doctor_alarm_home"
+cp "$ROOT/bin/alarm" "$stale_doctor_alarm_home/alarm"
+chmod +x "$stale_doctor_alarm_home/alarm"
+printf 'CODEX_ALARM_SOUND="Glass"\n' > "$stale_doctor_alarm_home/config"
+cat > "$stale_doctor_codex_home/hooks.json" <<'JSON'
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/old/alarm/alarm pre",
+            "timeout": 1,
+            "statusMessage": "Codex Alarm: old other event"
+          }
+        ]
+      }
+    ]
+  }
+}
+JSON
+PATH="/usr/bin:/bin" CODEX_HOME="$stale_doctor_codex_home" CODEX_ALARM_HOME="$stale_doctor_alarm_home" CODEX_ALARM_ACTIVATE_BUNDLE_ID='' "$stale_doctor_alarm_home/alarm" doctor > "$stale_doctor_log" 2>&1
+grep -q 'hooks: Codex Alarm entries 1' "$stale_doctor_log"
+grep -q 'hooks: Stop hook entries 0' "$stale_doctor_log"
+grep -q 'hooks: PermissionRequest hook entries 0' "$stale_doctor_log"
+grep -q 'WARN hooks: Stop hook not found' "$stale_doctor_log"
+grep -q 'WARN hooks: PermissionRequest hook not found' "$stale_doctor_log"
+if grep -q 'hooks: required entries present' "$stale_doctor_log"; then
+  echo "doctor reported required hooks for stale-only setup" >&2
+  exit 1
+fi
+test -x "$stale_doctor_alarm_home/alarm"
+grep -q 'CODEX_ALARM_SOUND="Glass"' "$stale_doctor_alarm_home/config"
+test ! -e "$stale_doctor_alarm_home/state.json"
 
 echo "uninstall dry-run"
 uninstall_codex_home="$TMP_ROOT/uninstall-codex"
