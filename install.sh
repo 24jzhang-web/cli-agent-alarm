@@ -110,8 +110,9 @@ function run(argv) {
     else delete doc.hooks[eventName];
   }
 
+  Object.keys(doc.hooks).forEach(cleanEvent);
+
   function addEvent(eventName, subcommand, statusMessage) {
-    cleanEvent(eventName);
     if (!Array.isArray(doc.hooks[eventName])) doc.hooks[eventName] = [];
     doc.hooks[eventName].push({
       hooks: [{

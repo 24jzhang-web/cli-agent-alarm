@@ -81,21 +81,115 @@ printf 'occupied\n' > "$state_block"
 printf '{"cwd":"/tmp/project","tool_name":"Bash","tool_input":{"description":"State failure"}}' | CODEX_HOME="$TMP_ROOT/state-codex" CODEX_ALARM_HOME="$state_block" PATH="$TMP_ROOT/bin:/usr/bin:/bin" CODEX_ALARM_BACKEND=terminal-notifier CODEX_ALARM_DRY_RUN=0 "$ROOT/bin/alarm" permission
 test "$(line_count "$notifier_log")" = "1"
 
+echo "install dry-run"
+dry_codex_home="$TMP_ROOT/dry-codex"
+dry_alarm_home="$dry_codex_home/alarm"
+dry_log="$TMP_ROOT/install-dry-run.log"
+CODEX_HOME="$dry_codex_home" CODEX_ALARM_HOME="$dry_alarm_home" "$ROOT/install.sh" --dry-run > "$dry_log" 2>&1
+grep -q 'DRY-RUN: would install' "$dry_log"
+grep -q 'DRY-RUN: would write Codex Alarm hooks' "$dry_log"
+test ! -e "$dry_alarm_home"
+test ! -e "$dry_codex_home/hooks.json"
+
+echo "install invalid hooks"
+bad_codex_home="$TMP_ROOT/bad-codex"
+bad_alarm_home="$bad_codex_home/alarm"
+bad_log="$TMP_ROOT/install-bad-hooks.log"
+mkdir -p "$bad_codex_home"
+printf '{' > "$bad_codex_home/hooks.json"
+if CODEX_HOME="$bad_codex_home" CODEX_ALARM_HOME="$bad_alarm_home" "$ROOT/install.sh" --yes > "$bad_log" 2>&1; then
+  echo "install succeeded with invalid hooks JSON" >&2
+  exit 1
+fi
+grep -q 'invalid JSON' "$bad_log"
+test ! -e "$bad_alarm_home/alarm"
+test ! -e "$bad_alarm_home/config"
+
 echo "install"
-"$ROOT/install.sh" --yes
-test -x "$CODEX_ALARM_HOME/alarm"
-test -f "$CODEX_ALARM_HOME/config"
-test -f "$CODEX_HOME/hooks.json"
-grep -q 'Codex Alarm:' "$CODEX_HOME/hooks.json"
+install_codex_home="$TMP_ROOT/install-codex"
+install_alarm_home="$install_codex_home/alarm"
+install_path="$TMP_ROOT/install-path"
+install_brew_log="$TMP_ROOT/install-brew.log"
+mkdir -p "$install_codex_home" "$install_alarm_home" "$install_path"
+printf 'CODEX_ALARM_SOUND="Submarine"\n' > "$install_alarm_home/config"
+cat > "$install_codex_home/hooks.json" <<'JSON'
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo keep-stop",
+            "timeout": 1,
+            "statusMessage": "Keep stop"
+          },
+          {
+            "type": "command",
+            "command": "/old/alarm/alarm stop",
+            "timeout": 1,
+            "statusMessage": "Codex Alarm: old stop"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/old/alarm/alarm permission",
+            "timeout": 1,
+            "statusMessage": "Codex Alarm: old permission"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/old/alarm/alarm pre",
+            "timeout": 1,
+            "statusMessage": "Codex Alarm: old other event"
+          },
+          {
+            "type": "command",
+            "command": "echo keep-other",
+            "timeout": 1,
+            "statusMessage": "Keep other"
+          }
+        ]
+      }
+    ]
+  }
+}
+JSON
+printf '#!/bin/sh\nprintf "brew %%s\\n" "$*" >> "%s"\nexit 99\n' "$install_brew_log" > "$install_path/brew"
+chmod +x "$install_path/brew"
+PATH="$install_path:/usr/bin:/bin" CODEX_HOME="$install_codex_home" CODEX_ALARM_HOME="$install_alarm_home" "$ROOT/install.sh" --yes
+test -x "$install_alarm_home/alarm"
+grep -q 'CODEX_ALARM_SOUND="Submarine"' "$install_alarm_home/config"
+test "$(find "$install_codex_home" -name 'hooks.json.codex-alarm-backup-*' -type f | wc -l | tr -d '[:space:]')" = "1"
+grep -q 'Keep stop' "$install_codex_home/hooks.json"
+grep -q 'Keep other' "$install_codex_home/hooks.json"
+if grep -q 'old stop\|old permission\|old other event' "$install_codex_home/hooks.json"; then
+  echo "stale Codex Alarm hooks were not removed" >&2
+  exit 1
+fi
+test "$(grep -c 'Codex Alarm: notifying completion' "$install_codex_home/hooks.json")" = "1"
+test "$(grep -c 'Codex Alarm: notifying approval request' "$install_codex_home/hooks.json")" = "1"
+test ! -e "$install_brew_log"
 
 echo "doctor"
-"$CODEX_ALARM_HOME/alarm" doctor >/dev/null
+CODEX_HOME="$install_codex_home" CODEX_ALARM_HOME="$install_alarm_home" "$install_alarm_home/alarm" doctor >/dev/null
 
 echo "uninstall"
-"$ROOT/uninstall.sh" --yes
-test ! -e "$CODEX_ALARM_HOME/alarm"
-if [ -f "$CODEX_HOME/hooks.json" ]; then
-  if grep -q 'Codex Alarm:' "$CODEX_HOME/hooks.json"; then
+CODEX_HOME="$install_codex_home" CODEX_ALARM_HOME="$install_alarm_home" "$ROOT/uninstall.sh" --yes
+test ! -e "$install_alarm_home/alarm"
+if [ -f "$install_codex_home/hooks.json" ]; then
+  if grep -q 'Codex Alarm:' "$install_codex_home/hooks.json"; then
     echo "Codex Alarm hooks still present after uninstall" >&2
     exit 1
   fi
