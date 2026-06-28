@@ -185,14 +185,120 @@ test ! -e "$install_brew_log"
 echo "doctor"
 CODEX_HOME="$install_codex_home" CODEX_ALARM_HOME="$install_alarm_home" "$install_alarm_home/alarm" doctor >/dev/null
 
-echo "uninstall"
-CODEX_HOME="$install_codex_home" CODEX_ALARM_HOME="$install_alarm_home" "$ROOT/uninstall.sh" --yes
-test ! -e "$install_alarm_home/alarm"
-if [ -f "$install_codex_home/hooks.json" ]; then
-  if grep -q 'Codex Alarm:' "$install_codex_home/hooks.json"; then
-    echo "Codex Alarm hooks still present after uninstall" >&2
-    exit 1
-  fi
+echo "uninstall dry-run"
+uninstall_codex_home="$TMP_ROOT/uninstall-codex"
+uninstall_alarm_home="$uninstall_codex_home/alarm"
+uninstall_log="$TMP_ROOT/uninstall-dry-run.log"
+mkdir -p "$uninstall_codex_home" "$uninstall_alarm_home"
+cp "$ROOT/bin/alarm" "$uninstall_alarm_home/alarm"
+chmod +x "$uninstall_alarm_home/alarm"
+printf 'CODEX_ALARM_SOUND="Submarine"\n' > "$uninstall_alarm_home/config"
+cat > "$uninstall_codex_home/hooks.json" <<JSON
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo keep-stop",
+            "timeout": 1,
+            "statusMessage": "Keep stop"
+          },
+          {
+            "type": "command",
+            "command": "\\"$uninstall_alarm_home/alarm\\" stop",
+            "timeout": 5,
+            "statusMessage": "Codex Alarm: notifying completion"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\\"$uninstall_alarm_home/alarm\\" permission",
+            "timeout": 5,
+            "statusMessage": "Codex Alarm: notifying approval request"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/old/alarm/alarm pre",
+            "timeout": 1,
+            "statusMessage": "Old alarm command"
+          },
+          {
+            "type": "command",
+            "command": "echo keep-other",
+            "timeout": 1,
+            "statusMessage": "Keep other"
+          }
+        ]
+      }
+    ]
+  }
+}
+JSON
+cp "$uninstall_codex_home/hooks.json" "$TMP_ROOT/hooks-before-dry-run.json"
+cp "$uninstall_alarm_home/config" "$TMP_ROOT/config-before-dry-run"
+CODEX_HOME="$uninstall_codex_home" CODEX_ALARM_HOME="$uninstall_alarm_home" "$ROOT/uninstall.sh" --dry-run > "$uninstall_log" 2>&1
+grep -q 'DRY-RUN: would remove Codex Alarm hooks' "$uninstall_log"
+grep -q 'DRY-RUN: would back up' "$uninstall_log"
+grep -q "DRY-RUN: would remove $uninstall_alarm_home/alarm" "$uninstall_log"
+grep -q 'DRY-RUN: would ask before removing' "$uninstall_log"
+cmp "$uninstall_codex_home/hooks.json" "$TMP_ROOT/hooks-before-dry-run.json"
+cmp "$uninstall_alarm_home/config" "$TMP_ROOT/config-before-dry-run"
+test -x "$uninstall_alarm_home/alarm"
+test "$(find "$uninstall_codex_home" -name 'hooks.json.codex-alarm-backup-*' -type f | wc -l | tr -d '[:space:]')" = "0"
+
+echo "uninstall invalid hooks"
+bad_uninstall_codex_home="$TMP_ROOT/bad-uninstall-codex"
+bad_uninstall_alarm_home="$bad_uninstall_codex_home/alarm"
+bad_uninstall_log="$TMP_ROOT/uninstall-bad-hooks.log"
+mkdir -p "$bad_uninstall_codex_home" "$bad_uninstall_alarm_home"
+cp "$ROOT/bin/alarm" "$bad_uninstall_alarm_home/alarm"
+chmod +x "$bad_uninstall_alarm_home/alarm"
+printf 'CODEX_ALARM_SOUND="Glass"\n' > "$bad_uninstall_alarm_home/config"
+printf '{' > "$bad_uninstall_codex_home/hooks.json"
+if CODEX_HOME="$bad_uninstall_codex_home" CODEX_ALARM_HOME="$bad_uninstall_alarm_home" "$ROOT/uninstall.sh" --yes > "$bad_uninstall_log" 2>&1; then
+  echo "uninstall succeeded with invalid hooks JSON" >&2
+  exit 1
 fi
+grep -q 'invalid JSON' "$bad_uninstall_log"
+test -x "$bad_uninstall_alarm_home/alarm"
+test -f "$bad_uninstall_alarm_home/config"
+
+echo "uninstall"
+CODEX_HOME="$uninstall_codex_home" CODEX_ALARM_HOME="$uninstall_alarm_home" "$ROOT/uninstall.sh"
+test ! -e "$uninstall_alarm_home/alarm"
+test -f "$uninstall_alarm_home/config"
+test "$(find "$uninstall_codex_home" -name 'hooks.json.codex-alarm-backup-*' -type f | wc -l | tr -d '[:space:]')" = "1"
+grep -q 'Keep stop' "$uninstall_codex_home/hooks.json"
+grep -q 'Keep other' "$uninstall_codex_home/hooks.json"
+if grep -q 'Codex Alarm:\|/old/alarm/alarm' "$uninstall_codex_home/hooks.json"; then
+  echo "Codex Alarm hooks still present after uninstall" >&2
+  exit 1
+fi
+test -x "$TMP_ROOT/bin/terminal-notifier"
+
+echo "uninstall removes config with yes"
+yes_uninstall_codex_home="$TMP_ROOT/yes-uninstall-codex"
+yes_uninstall_alarm_home="$yes_uninstall_codex_home/alarm"
+mkdir -p "$yes_uninstall_alarm_home"
+cp "$ROOT/bin/alarm" "$yes_uninstall_alarm_home/alarm"
+chmod +x "$yes_uninstall_alarm_home/alarm"
+printf 'CODEX_ALARM_SOUND="Glass"\n' > "$yes_uninstall_alarm_home/config"
+CODEX_HOME="$yes_uninstall_codex_home" CODEX_ALARM_HOME="$yes_uninstall_alarm_home" "$ROOT/uninstall.sh" --yes
+test ! -e "$yes_uninstall_alarm_home/alarm"
+test ! -e "$yes_uninstall_alarm_home/config"
+test ! -d "$yes_uninstall_alarm_home"
 
 echo "ok"
