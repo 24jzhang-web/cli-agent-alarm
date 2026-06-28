@@ -39,6 +39,10 @@ function run(argv) {
 JXA
 }
 
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
 write_hooks_json() {
   local dry="$1"
   /usr/bin/osascript -l JavaScript - "$HOOKS_FILE" "$INSTALL_ALARM" "$dry" <<'JXA'
@@ -106,6 +110,11 @@ if [ "$(uname -s)" != "Darwin" ]; then
   exit 1
 fi
 
+if ! command_exists /usr/bin/osascript; then
+  echo "ERROR: /usr/bin/osascript is required." >&2
+  exit 1
+fi
+
 if [ -f "$HOOKS_FILE" ] && ! validate_hooks_json; then
   echo "ERROR: existing hooks file is invalid JSON: $HOOKS_FILE" >&2
   echo "No changes were made. Fix that file, then rerun uninstall." >&2
@@ -118,8 +127,15 @@ echo "CODEX_ALARM_HOME: $CODEX_ALARM_HOME"
 
 if [ "$DRY_RUN" -eq 1 ]; then
   [ -f "$HOOKS_FILE" ] && echo "DRY-RUN: would remove Codex Alarm hooks from $HOOKS_FILE"
+  [ -f "$HOOKS_FILE" ] && echo "DRY-RUN: would back up $HOOKS_FILE before editing"
   [ -f "$INSTALL_ALARM" ] && echo "DRY-RUN: would remove $INSTALL_ALARM"
-  [ -f "$CONFIG_FILE" ] && echo "DRY-RUN: would ask before removing $CONFIG_FILE"
+  if [ -f "$CONFIG_FILE" ]; then
+    if [ "$YES" -eq 1 ]; then
+      echo "DRY-RUN: would remove $CONFIG_FILE"
+    else
+      echo "DRY-RUN: would ask before removing $CONFIG_FILE"
+    fi
+  fi
   [ -f "$HOOKS_FILE" ] && write_hooks_json 1
   exit 0
 fi
