@@ -1,0 +1,33 @@
+name: Bug report
+description: Report a problem with Codex Alarm
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: macOS version, terminal app, Codex CLI version, and whether terminal-notifier is installed.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output
+      description: Paste `~/.codex/alarm/alarm doctor` output. Remove private paths if needed.
+      render: text
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: How can we reproduce it?
+    validations:
+      required: true

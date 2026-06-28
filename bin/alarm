@@ -1,0 +1,444 @@
+#!/bin/bash
+#
+# Codex Alarm: local macOS notifications for Codex CLI lifecycle hooks.
+
+VERSION="0.1.0"
+
+env_was_set() {
+  eval '[ "${'"$1"'+x}" = "x" ]'
+}
+
+ORIG_BACKEND="${CODEX_ALARM_BACKEND-}"
+ORIG_BUNDLE_ID="${CODEX_ALARM_ACTIVATE_BUNDLE_ID-}"
+ORIG_SOUND="${CODEX_ALARM_SOUND-}"
+ORIG_NOTIFY_STOP="${CODEX_ALARM_NOTIFY_ON_STOP-}"
+ORIG_NOTIFY_PERMISSION="${CODEX_ALARM_NOTIFY_ON_PERMISSION-}"
+HAS_BACKEND=0; env_was_set CODEX_ALARM_BACKEND && HAS_BACKEND=1
+HAS_BUNDLE_ID=0; env_was_set CODEX_ALARM_ACTIVATE_BUNDLE_ID && HAS_BUNDLE_ID=1
+HAS_SOUND=0; env_was_set CODEX_ALARM_SOUND && HAS_SOUND=1
+HAS_NOTIFY_STOP=0; env_was_set CODEX_ALARM_NOTIFY_ON_STOP && HAS_NOTIFY_STOP=1
+HAS_NOTIFY_PERMISSION=0; env_was_set CODEX_ALARM_NOTIFY_ON_PERMISSION && HAS_NOTIFY_PERMISSION=1
+
+CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+CODEX_ALARM_HOME="${CODEX_ALARM_HOME:-$CODEX_HOME/alarm}"
+CONFIG_FILE="$CODEX_ALARM_HOME/config"
+STATE_FILE="$CODEX_ALARM_HOME/state.json"
+
+CODEX_ALARM_BACKEND="auto"
+CODEX_ALARM_ACTIVATE_BUNDLE_ID=""
+CODEX_ALARM_SOUND="Glass"
+CODEX_ALARM_NOTIFY_ON_STOP="1"
+CODEX_ALARM_NOTIFY_ON_PERMISSION="1"
+
+trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+strip_quotes() {
+  local value="$1"
+  if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+    value="${value#\"}"
+    value="${value%\"}"
+  elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+    value="${value#\'}"
+    value="${value%\'}"
+  fi
+  printf '%s' "$value"
+}
+
+load_config() {
+  [ -f "$CONFIG_FILE" ] || return 0
+
+  local line key value
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    line="$(trim "$line")"
+    [ -n "$line" ] || continue
+    [[ "$line" == *=* ]] || continue
+    key="$(trim "${line%%=*}")"
+    value="$(trim "${line#*=}")"
+    value="$(strip_quotes "$value")"
+
+    case "$key" in
+      CODEX_ALARM_BACKEND) CODEX_ALARM_BACKEND="$value" ;;
+      CODEX_ALARM_ACTIVATE_BUNDLE_ID) CODEX_ALARM_ACTIVATE_BUNDLE_ID="$value" ;;
+      CODEX_ALARM_SOUND) CODEX_ALARM_SOUND="$value" ;;
+      CODEX_ALARM_NOTIFY_ON_STOP) CODEX_ALARM_NOTIFY_ON_STOP="$value" ;;
+      CODEX_ALARM_NOTIFY_ON_PERMISSION) CODEX_ALARM_NOTIFY_ON_PERMISSION="$value" ;;
+    esac
+  done < "$CONFIG_FILE"
+}
+
+apply_env_overrides() {
+  [ "$HAS_BACKEND" -eq 1 ] && CODEX_ALARM_BACKEND="$ORIG_BACKEND"
+  [ "$HAS_BUNDLE_ID" -eq 1 ] && CODEX_ALARM_ACTIVATE_BUNDLE_ID="$ORIG_BUNDLE_ID"
+  [ "$HAS_SOUND" -eq 1 ] && CODEX_ALARM_SOUND="$ORIG_SOUND"
+  [ "$HAS_NOTIFY_STOP" -eq 1 ] && CODEX_ALARM_NOTIFY_ON_STOP="$ORIG_NOTIFY_STOP"
+  [ "$HAS_NOTIFY_PERMISSION" -eq 1 ] && CODEX_ALARM_NOTIFY_ON_PERMISSION="$ORIG_NOTIFY_PERMISSION"
+}
+
+detect_bundle_id() {
+  if [ -n "$CODEX_ALARM_ACTIVATE_BUNDLE_ID" ]; then
+    printf '%s' "$CODEX_ALARM_ACTIVATE_BUNDLE_ID"
+    return 0
+  fi
+
+  case "${TERM_PROGRAM-}" in
+    Apple_Terminal) printf '%s' "com.apple.Terminal" ;;
+    iTerm.app) printf '%s' "com.googlecode.iterm2" ;;
+    vscode) printf '%s' "com.microsoft.VSCode" ;;
+    Cursor) printf '%s' "com.todesktop.230313mzl4w4u92" ;;
+    ghostty|Ghostty) printf '%s' "com.mitchellh.ghostty" ;;
+    WarpTerminal) printf '%s' "dev.warp.Warp-Stable" ;;
+    *) printf '%s' "" ;;
+  esac
+}
+
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+resolve_backend() {
+  case "$CODEX_ALARM_BACKEND" in
+    terminal-notifier)
+      command_exists terminal-notifier && printf '%s' "terminal-notifier" || printf '%s' "osascript"
+      ;;
+    osascript)
+      printf '%s' "osascript"
+      ;;
+    auto|*)
+      command_exists terminal-notifier && printf '%s' "terminal-notifier" || printf '%s' "osascript"
+      ;;
+  esac
+}
+
+run_notification() {
+  local event="$1"
+  local payload_file backend bundle_id notifier_path dry_run
+
+  case "$event" in
+    stop)
+      [ "$CODEX_ALARM_NOTIFY_ON_STOP" = "1" ] || return 0
+      ;;
+    permission)
+      [ "$CODEX_ALARM_NOTIFY_ON_PERMISSION" = "1" ] || return 0
+      ;;
+  esac
+
+  command_exists /usr/bin/osascript || return 0
+  mkdir -p "$CODEX_ALARM_HOME" 2>/dev/null || true
+
+  payload_file="${TMPDIR:-/tmp}/codex-alarm-payload.$$"
+  cat > "$payload_file" 2>/dev/null || payload_file=""
+
+  backend="$(resolve_backend)"
+  bundle_id="$(detect_bundle_id)"
+  notifier_path=""
+  if [ "$backend" = "terminal-notifier" ]; then
+    notifier_path="$(command -v terminal-notifier 2>/dev/null || true)"
+    [ -n "$notifier_path" ] || backend="osascript"
+  fi
+  dry_run="${CODEX_ALARM_DRY_RUN:-0}"
+
+  /usr/bin/osascript -l JavaScript - "$event" "$backend" "$bundle_id" "$CODEX_ALARM_SOUND" "$CODEX_ALARM_HOME" "$dry_run" "$payload_file" "$notifier_path" <<'JXA' || true
+ObjC.import('Foundation');
+
+function run(argv) {
+  var event = argv[0] || 'test';
+  var backend = argv[1] || 'osascript';
+  var bundleId = argv[2] || '';
+  var sound = argv[3] || 'Glass';
+  var alarmHome = argv[4] || '';
+  var dryRun = argv[5] === '1';
+  var payloadPath = argv[6] || '';
+  var notifierPath = argv[7] || '';
+  var app = Application.currentApplication();
+  app.includeStandardAdditions = true;
+
+  function readText(path) {
+    try {
+      return ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(path, $.NSUTF8StringEncoding, null)) || '';
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function writeText(path, value) {
+    var text = $.NSString.alloc.initWithUTF8String(String(value));
+    return text.writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null);
+  }
+
+  function parsePayload(text) {
+    try {
+      return text ? JSON.parse(text) : {};
+    } catch (error) {
+      return {};
+    }
+  }
+
+  function env(name) {
+    var value = $.NSProcessInfo.processInfo.environment.objectForKey(name);
+    return value ? ObjC.unwrap(value) : '';
+  }
+
+  function basename(path) {
+    path = String(path || '').replace(/\/+$/, '');
+    if (!path) return 'Codex';
+    var parts = path.split('/');
+    return parts[parts.length - 1] || 'Codex';
+  }
+
+  function firstLine(value) {
+    return String(value || '').replace(/\r/g, '\n').split('\n')[0].trim();
+  }
+
+  function truncate(value, max) {
+    value = firstLine(value);
+    if (value.length <= max) return value;
+    return value.slice(0, Math.max(0, max - 1)) + '…';
+  }
+
+  function pick(obj, keys) {
+    for (var i = 0; i < keys.length; i++) {
+      if (obj && obj[keys[i]] !== undefined && obj[keys[i]] !== null && String(obj[keys[i]]).trim() !== '') {
+        return obj[keys[i]];
+      }
+    }
+    return '';
+  }
+
+  function shellQuote(value) {
+    return "'" + String(value).replace(/'/g, "'\\''") + "'";
+  }
+
+  function statePath() {
+    return alarmHome ? alarmHome.replace(/\/+$/, '') + '/state.json' : '';
+  }
+
+  function shouldSuppressPermission(fingerprint) {
+    if (event !== 'permission' || !alarmHome || dryRun) return false;
+    var path = statePath();
+    var now = Date.now();
+    var state = {};
+    try {
+      state = JSON.parse(readText(path) || '{}');
+    } catch (error) {
+      state = {};
+    }
+
+    var suppress = state.last_permission_fingerprint === fingerprint &&
+      typeof state.last_permission_time_ms === 'number' &&
+      now - state.last_permission_time_ms <= 1000;
+
+    state.last_permission_fingerprint = fingerprint;
+    state.last_permission_time_ms = now;
+    try {
+      writeText(path, JSON.stringify(state, null, 2) + '\n');
+    } catch (error) {}
+    return suppress;
+  }
+
+  function send(title, body) {
+    if (dryRun) {
+      console.log(JSON.stringify({
+        event: event,
+        backend: backend,
+        title: title,
+        body: body,
+        activateBundleId: bundleId,
+        sound: sound
+      }));
+      return;
+    }
+
+    if (backend === 'terminal-notifier' && notifierPath) {
+      var command = shellQuote(notifierPath) +
+        ' -title ' + shellQuote(title) +
+        ' -message ' + shellQuote(body) +
+        ' -group ' + shellQuote('codex-alarm-' + event);
+      if (sound) command += ' -sound ' + shellQuote(sound);
+      if (bundleId) command += ' -activate ' + shellQuote(bundleId);
+      try {
+        app.doShellScript(command);
+        return;
+      } catch (error) {}
+    }
+
+    try {
+      app.displayNotification(body, { withTitle: title, soundName: sound });
+    } catch (error) {
+      try {
+        app.displayNotification(body, { withTitle: title });
+      } catch (ignored) {}
+    }
+  }
+
+  var payload = parsePayload(readText(payloadPath));
+  var cwd = pick(payload, ['cwd', 'working_directory', 'workingDirectory']) || env('PWD') || '';
+  var folder = basename(cwd);
+  var title = 'Codex Alarm';
+  var detail = '';
+
+  if (event === 'permission') {
+    var toolInput = payload.tool_input || payload.toolInput || {};
+    var toolName = pick(payload, ['tool_name', 'toolName']) || '';
+    detail = pick(toolInput, ['description']) || toolName || pick(toolInput, ['cmd', 'command']) || 'Approval requested';
+    detail = truncate(detail, 120);
+    title = 'Codex needs approval';
+    var fingerprint = ['permission', toolName, detail].join('|');
+    if (shouldSuppressPermission(fingerprint)) return;
+    send(title, folder + ': ' + detail);
+    return;
+  }
+
+  if (event === 'stop') {
+    detail = pick(payload, ['last_assistant_message', 'last-assistant-message', 'lastAssistantMessage']);
+    detail = truncate(detail || 'Waiting for your next instruction', 120);
+    send('Codex finished', folder + ': ' + detail);
+    return;
+  }
+
+  if (event === 'test-permission') {
+    send('Codex needs approval', folder + ': Test approval request');
+    return;
+  }
+
+  send('Codex Alarm test', folder + ': Notifications are working');
+}
+JXA
+
+  [ -n "$payload_file" ] && rm -f "$payload_file" 2>/dev/null || true
+}
+
+doctor() {
+  local exit_code=0 backend bundle_id hooks_file installed_path
+  backend="$(resolve_backend)"
+  bundle_id="$(detect_bundle_id)"
+  hooks_file="$CODEX_HOME/hooks.json"
+  installed_path="$CODEX_ALARM_HOME/alarm"
+
+  echo "Codex Alarm doctor"
+  echo "version: $VERSION"
+  echo "local-only: no telemetry, no network requests"
+  echo "CODEX_HOME: $CODEX_HOME"
+  echo "CODEX_ALARM_HOME: $CODEX_ALARM_HOME"
+  echo "backend: $backend"
+  echo "sound: $CODEX_ALARM_SOUND"
+  echo "activate bundle ID: ${bundle_id:-<not configured>}"
+
+  if [ "$(uname -s)" != "Darwin" ]; then
+    echo "ERROR unsupported OS: $(uname -s)"
+    exit_code=1
+  fi
+
+  if command_exists /usr/bin/osascript; then
+    echo "osascript: found"
+  else
+    echo "ERROR osascript: missing"
+    exit_code=1
+  fi
+
+  if command_exists terminal-notifier; then
+    echo "terminal-notifier: found"
+  else
+    echo "WARN terminal-notifier missing: click-to-focus unavailable"
+  fi
+
+  if command_exists codex; then
+    echo "codex: found"
+  else
+    echo "WARN codex not found on PATH: cannot verify CLI availability"
+  fi
+
+  if [ -f "$CONFIG_FILE" ]; then
+    echo "config: $CONFIG_FILE"
+  else
+    echo "WARN config missing: $CONFIG_FILE"
+  fi
+
+  if [ -f "$installed_path" ]; then
+    echo "installed executable: $installed_path"
+  elif [ "$0" = "$installed_path" ]; then
+    echo "ERROR installed executable missing: $installed_path"
+    exit_code=1
+  else
+    echo "WARN installed executable not found: $installed_path"
+  fi
+
+  if [ -f "$hooks_file" ]; then
+    if /usr/bin/osascript -l JavaScript - "$hooks_file" <<'JXA' >/dev/null 2>&1
+function run(argv) {
+  var path = argv[0];
+  ObjC.import('Foundation');
+  var text = ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(path, $.NSUTF8StringEncoding, null));
+  JSON.parse(text || '{}');
+}
+JXA
+    then
+      echo "hooks.json: valid JSON"
+      if grep -q "Codex Alarm:" "$hooks_file"; then
+        echo "hooks: Codex Alarm entries present"
+      else
+        echo "WARN hooks: Codex Alarm entries not found"
+      fi
+    else
+      echo "ERROR hooks.json is invalid JSON: $hooks_file"
+      exit_code=1
+    fi
+  else
+    echo "WARN hooks.json missing: $hooks_file"
+  fi
+
+  [ -n "$bundle_id" ] || echo "WARN no activate bundle ID configured: click-to-focus may be unavailable"
+  echo "Run /hooks inside Codex to verify the Codex Alarm hooks are trusted."
+  return "$exit_code"
+}
+
+usage() {
+  cat <<'EOF'
+Usage: alarm <command>
+
+Commands:
+  stop        Codex Stop hook entrypoint
+  permission  Codex PermissionRequest hook entrypoint
+  test        Send test notifications
+  doctor      Print diagnostics
+  version     Print version
+EOF
+}
+
+load_config
+apply_env_overrides
+
+case "${1-}" in
+  stop)
+    run_notification stop
+    exit 0
+    ;;
+  permission)
+    run_notification permission
+    exit 0
+    ;;
+  test)
+    printf '' | run_notification test
+    sleep 1
+    printf '' | run_notification test-permission
+    ;;
+  doctor)
+    doctor
+    ;;
+  version)
+    echo "$VERSION"
+    ;;
+  -h|--help|help|"")
+    usage
+    ;;
+  *)
+    echo "Unknown command: $1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

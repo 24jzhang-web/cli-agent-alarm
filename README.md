@@ -1,1 +1,182 @@
-# alarm
+# Codex Alarm
+
+Lightweight macOS notifications for Codex CLI.
+
+Codex Alarm alerts you when Codex needs attention:
+
+- Codex finished a turn and is waiting for your next instruction.
+- Codex is waiting for approval before taking an action.
+
+It uses Codex lifecycle hooks, not terminal output scraping.
+
+## Compatibility
+
+| Requirement | Status |
+| --- | --- |
+| macOS | v1 target platform |
+| Codex CLI | supported through Codex hooks |
+| `terminal-notifier` | required for full click-to-focus |
+| `osascript` | built-in fallback for banner + sound |
+
+No npm, pip, Python package, Node package, or `jq` dependency is required.
+
+## Before Installing
+
+Codex Alarm is local-only. It does not send telemetry and does not make network requests.
+
+The installer modifies your user-level Codex setup:
+
+- installs `alarm` under `${CODEX_HOME:-~/.codex}/alarm/`
+- creates `${CODEX_HOME:-~/.codex}/alarm/config` if missing
+- writes dedupe state to `${CODEX_HOME:-~/.codex}/alarm/state.json`
+- updates `${CODEX_HOME:-~/.codex}/hooks.json`
+- creates a timestamped backup beside `hooks.json` before editing it
+
+Codex will still require you to review and trust the hooks with `/hooks`.
+
+## Install
+
+Clone or download this repo first so you can inspect the scripts.
+
+```sh
+git clone https://github.com/24jzhang-web/agent-cli-clarm.git
+cd agent-cli-clarm
+./install.sh --dry-run
+./install.sh
+```
+
+Then restart Codex and run:
+
+```text
+/hooks
+```
+
+Review and trust the Codex Alarm hooks, then test notifications:
+
+```sh
+~/.codex/alarm/alarm test
+```
+
+## Full Click-to-Focus
+
+Banner + sound works with macOS built-in `osascript`. Clicking the banner to focus your terminal requires `terminal-notifier`.
+
+Install it with Homebrew:
+
+```sh
+brew install terminal-notifier
+```
+
+Set your terminal app bundle ID in `~/.codex/alarm/config`:
+
+```sh
+CODEX_ALARM_ACTIVATE_BUNDLE_ID="com.apple.Terminal"
+```
+
+Common bundle IDs:
+
+| App | Bundle ID |
+| --- | --- |
+| Terminal | `com.apple.Terminal` |
+| iTerm2 | `com.googlecode.iterm2` |
+| Ghostty | `com.mitchellh.ghostty` |
+| Warp | `dev.warp.Warp-Stable` |
+| VS Code | `com.microsoft.VSCode` |
+| Cursor | `com.todesktop.230313mzl4w4u92` |
+
+Find another app's bundle ID with:
+
+```sh
+osascript -e 'id of app "App Name"'
+```
+
+macOS controls whether notifications appear as temporary banners or persistent alerts in System Settings.
+
+## Configuration
+
+Default config:
+
+```sh
+CODEX_ALARM_BACKEND="auto"
+CODEX_ALARM_ACTIVATE_BUNDLE_ID=""
+CODEX_ALARM_SOUND="Glass"
+CODEX_ALARM_NOTIFY_ON_STOP="1"
+CODEX_ALARM_NOTIFY_ON_PERMISSION="1"
+```
+
+Environment variables override `~/.codex/alarm/config`.
+
+Advanced paths:
+
+```sh
+CODEX_HOME="$HOME/.codex"
+CODEX_ALARM_HOME="$CODEX_HOME/alarm"
+```
+
+Dry-run notification delivery:
+
+```sh
+CODEX_ALARM_DRY_RUN=1 ~/.codex/alarm/alarm test
+```
+
+## Commands
+
+```sh
+~/.codex/alarm/alarm test
+~/.codex/alarm/alarm doctor
+~/.codex/alarm/alarm version
+```
+
+Hook entrypoints are installed automatically:
+
+```sh
+~/.codex/alarm/alarm stop
+~/.codex/alarm/alarm permission
+```
+
+Normal hook entrypoints are silent and exit successfully so they do not interfere with Codex.
+
+## Uninstall
+
+```sh
+./uninstall.sh --dry-run
+./uninstall.sh
+```
+
+Uninstall removes only Codex Alarm hook entries and the installed alarm executable. It does not remove `terminal-notifier`.
+
+## Security
+
+Codex Alarm installs user-level Codex hooks. Hooks run local commands when Codex lifecycle events occur.
+
+Before installing, inspect:
+
+- `bin/alarm`
+- `install.sh`
+- `uninstall.sh`
+
+Codex Alarm never auto-approves or denies Codex actions. It only sends local notifications.
+
+Do not use pipe-to-shell install commands unless you have inspected the code and accept that risk.
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+## Troubleshooting
+
+Run:
+
+```sh
+~/.codex/alarm/alarm doctor
+```
+
+Common checks:
+
+- Restart Codex after install.
+- Run `/hooks` and trust the Codex Alarm hooks.
+- Install `terminal-notifier` for click-to-focus.
+- Set `CODEX_ALARM_ACTIVATE_BUNDLE_ID` if clicking the notification does not focus your terminal.
+- Confirm macOS allows notifications for the app sending them.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

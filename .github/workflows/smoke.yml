@@ -1,0 +1,17 @@
+name: smoke
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ShellCheck
+        run: brew install shellcheck
+      - name: ShellCheck
+        run: shellcheck bin/alarm install.sh uninstall.sh test/smoke.sh
+      - name: Smoke tests
+        run: test/smoke.sh
