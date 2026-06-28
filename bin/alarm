@@ -355,7 +355,7 @@ JXA
 }
 
 doctor() {
-  local exit_code=0 backend bundle_id hooks_file installed_path
+  local exit_code=0 backend bundle_id hooks_file installed_path has_stop_hook has_permission_hook
   backend="$(resolve_backend)"
   bundle_id="$(detect_bundle_id)"
   hooks_file="$CODEX_HOME/hooks.json"
@@ -431,6 +431,16 @@ function run(argv) {
   var doc = JSON.parse(text || '{}');
   var hooks = doc && doc.hooks && typeof doc.hooks === 'object' && !Array.isArray(doc.hooks) ? doc.hooks : {};
   var alarmCount = 0;
+  var stopCount = 0;
+  var permissionCount = 0;
+  function hasInstalledCommand(command, subcommand) {
+    if (!alarmPath || command.indexOf(alarmPath) === -1) return false;
+    var rest = command.slice(command.indexOf(alarmPath) + alarmPath.length).trim();
+    if (rest.charCodeAt(0) === 34 || rest.charCodeAt(0) === 39) {
+      rest = rest.slice(1).trim();
+    }
+    return rest.split(/\s+/)[0] === subcommand;
+  }
   Object.keys(hooks).forEach(function(eventName) {
     var groups = Array.isArray(hooks[eventName]) ? hooks[eventName] : [];
     groups.forEach(function(group) {
@@ -443,20 +453,43 @@ function run(argv) {
             (alarmPath && command.indexOf(alarmPath) !== -1)) {
           alarmCount++;
         }
+        if (eventName === 'Stop' && hasInstalledCommand(command, 'stop')) {
+          stopCount++;
+        }
+        if (eventName === 'PermissionRequest' && hasInstalledCommand(command, 'permission')) {
+          permissionCount++;
+        }
       });
     });
   });
-  return 'hooks: Codex Alarm entries ' + alarmCount;
+  return [
+    'hooks: Codex Alarm entries ' + alarmCount,
+    'hooks: Stop hook entries ' + stopCount,
+    'hooks: PermissionRequest hook entries ' + permissionCount
+  ].join('\n');
 }
 JXA
 )"
     then
       echo "hooks.json: valid JSON"
       echo "$hook_report"
-      if [ "${hook_report##* }" != "0" ]; then
-        echo "hooks: Codex Alarm entries present"
+      if grep -q '^hooks: Codex Alarm entries [1-9]' <<<"$hook_report"; then
+        echo "hooks: Codex Alarm entries found"
       else
         echo "WARN hooks: Codex Alarm entries not found"
+      fi
+      has_stop_hook=0
+      has_permission_hook=0
+      grep -q '^hooks: Stop hook entries [1-9]' <<<"$hook_report" && has_stop_hook=1
+      grep -q '^hooks: PermissionRequest hook entries [1-9]' <<<"$hook_report" && has_permission_hook=1
+      if [ "$has_stop_hook" -eq 1 ] && [ "$has_permission_hook" -eq 1 ]; then
+        echo "hooks: required entries present"
+      fi
+      if [ "$has_stop_hook" -eq 0 ]; then
+        echo "WARN hooks: Stop hook not found"
+      fi
+      if [ "$has_permission_hook" -eq 0 ]; then
+        echo "WARN hooks: PermissionRequest hook not found"
       fi
     else
       echo "ERROR hooks.json is invalid JSON: $hooks_file"
