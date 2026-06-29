@@ -2,7 +2,7 @@
 #
 # Codex Alarm: local macOS notifications for Codex CLI lifecycle hooks.
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 
 env_was_set() {
   [ "${!1+x}" = "x" ]
@@ -11,6 +11,8 @@ env_was_set() {
 ORIG_BACKEND="${CODEX_ALARM_BACKEND-}"
 ORIG_BUNDLE_ID="${CODEX_ALARM_ACTIVATE_BUNDLE_ID-}"
 ORIG_SOUND="${CODEX_ALARM_SOUND-}"
+ORIG_SOUND_FILE="${CODEX_ALARM_SOUND_FILE-}"
+ORIG_SOUND_FALLBACK="${CODEX_ALARM_SOUND_FALLBACK-}"
 ORIG_NOTIFY_STOP="${CODEX_ALARM_NOTIFY_ON_STOP-}"
 ORIG_NOTIFY_PERMISSION="${CODEX_ALARM_NOTIFY_ON_PERMISSION-}"
 ORIG_BACKEND_TIMEOUT="${CODEX_ALARM_BACKEND_TIMEOUT_SECONDS-}"
@@ -18,6 +20,8 @@ ORIG_ALLOW_OSASCRIPT_FALLBACK="${CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK-}"
 HAS_BACKEND=0; env_was_set CODEX_ALARM_BACKEND && HAS_BACKEND=1
 HAS_BUNDLE_ID=0; env_was_set CODEX_ALARM_ACTIVATE_BUNDLE_ID && HAS_BUNDLE_ID=1
 HAS_SOUND=0; env_was_set CODEX_ALARM_SOUND && HAS_SOUND=1
+HAS_SOUND_FILE=0; env_was_set CODEX_ALARM_SOUND_FILE && HAS_SOUND_FILE=1
+HAS_SOUND_FALLBACK=0; env_was_set CODEX_ALARM_SOUND_FALLBACK && HAS_SOUND_FALLBACK=1
 HAS_NOTIFY_STOP=0; env_was_set CODEX_ALARM_NOTIFY_ON_STOP && HAS_NOTIFY_STOP=1
 HAS_NOTIFY_PERMISSION=0; env_was_set CODEX_ALARM_NOTIFY_ON_PERMISSION && HAS_NOTIFY_PERMISSION=1
 HAS_BACKEND_TIMEOUT=0; env_was_set CODEX_ALARM_BACKEND_TIMEOUT_SECONDS && HAS_BACKEND_TIMEOUT=1
@@ -30,6 +34,8 @@ CONFIG_FILE="$CODEX_ALARM_HOME/config"
 CODEX_ALARM_BACKEND="auto"
 CODEX_ALARM_ACTIVATE_BUNDLE_ID=""
 CODEX_ALARM_SOUND="Glass"
+CODEX_ALARM_SOUND_FILE=""
+CODEX_ALARM_SOUND_FALLBACK="0"
 CODEX_ALARM_NOTIFY_ON_STOP="1"
 CODEX_ALARM_NOTIFY_ON_PERMISSION="1"
 CODEX_ALARM_BACKEND_TIMEOUT_SECONDS="3"
@@ -92,6 +98,16 @@ load_config() {
         ;;
       CODEX_ALARM_ACTIVATE_BUNDLE_ID) CODEX_ALARM_ACTIVATE_BUNDLE_ID="$value" ;;
       CODEX_ALARM_SOUND) CODEX_ALARM_SOUND="$value" ;;
+      CODEX_ALARM_SOUND_FILE) CODEX_ALARM_SOUND_FILE="$value" ;;
+      CODEX_ALARM_SOUND_FALLBACK)
+        case "$value" in
+          0|1) CODEX_ALARM_SOUND_FALLBACK="$value" ;;
+          *)
+            set_config_error "$CONFIG_FILE:$line_number: CODEX_ALARM_SOUND_FALLBACK must be 0 or 1"
+            CODEX_ALARM_SOUND_FALLBACK="$value"
+            ;;
+        esac
+        ;;
       CODEX_ALARM_NOTIFY_ON_STOP)
         case "$value" in
           0|1) CODEX_ALARM_NOTIFY_ON_STOP="$value" ;;
@@ -135,13 +151,66 @@ apply_env_overrides() {
   [ "$HAS_BACKEND" -eq 1 ] && CODEX_ALARM_BACKEND="$ORIG_BACKEND"
   [ "$HAS_BUNDLE_ID" -eq 1 ] && CODEX_ALARM_ACTIVATE_BUNDLE_ID="$ORIG_BUNDLE_ID"
   [ "$HAS_SOUND" -eq 1 ] && CODEX_ALARM_SOUND="$ORIG_SOUND"
+  [ "$HAS_SOUND_FILE" -eq 1 ] && CODEX_ALARM_SOUND_FILE="$ORIG_SOUND_FILE"
+  [ "$HAS_SOUND_FALLBACK" -eq 1 ] && CODEX_ALARM_SOUND_FALLBACK="$ORIG_SOUND_FALLBACK"
   [ "$HAS_NOTIFY_STOP" -eq 1 ] && CODEX_ALARM_NOTIFY_ON_STOP="$ORIG_NOTIFY_STOP"
   [ "$HAS_NOTIFY_PERMISSION" -eq 1 ] && CODEX_ALARM_NOTIFY_ON_PERMISSION="$ORIG_NOTIFY_PERMISSION"
   [ "$HAS_BACKEND_TIMEOUT" -eq 1 ] && CODEX_ALARM_BACKEND_TIMEOUT_SECONDS="$ORIG_BACKEND_TIMEOUT"
   [ "$HAS_ALLOW_OSASCRIPT_FALLBACK" -eq 1 ] && CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK="$ORIG_ALLOW_OSASCRIPT_FALLBACK"
 }
 
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+bundle_id_for_term_program() {
+  case "$1" in
+    Apple_Terminal) printf '%s' "com.apple.Terminal" ;;
+    iTerm.app|iTerm2) printf '%s' "com.googlecode.iterm2" ;;
+    vscode) printf '%s' "com.microsoft.VSCode" ;;
+    Cursor) printf '%s' "com.todesktop.230313mzl4w4u92" ;;
+    ghostty|Ghostty) printf '%s' "com.mitchellh.ghostty" ;;
+    WarpTerminal|Warp) printf '%s' "dev.warp.Warp-Stable" ;;
+    *) printf '%s' "" ;;
+  esac
+}
+
+bundle_id_for_process_command() {
+  case "$1" in
+    *"/Terminal.app/"*|*"/Terminal.app") printf '%s' "com.apple.Terminal" ;;
+    *"/iTerm.app/"*|*"/iTerm.app"|*"/iTerm2.app/"*|*"/iTerm2.app") printf '%s' "com.googlecode.iterm2" ;;
+    *"/Visual Studio Code.app/"*|*"/Visual Studio Code.app") printf '%s' "com.microsoft.VSCode" ;;
+    *"/Cursor.app/"*|*"/Cursor.app") printf '%s' "com.todesktop.230313mzl4w4u92" ;;
+    *"/Ghostty.app/"*|*"/Ghostty.app") printf '%s' "com.mitchellh.ghostty" ;;
+    *"/Warp.app/"*|*"/Warp.app") printf '%s' "dev.warp.Warp-Stable" ;;
+    *) printf '%s' "" ;;
+  esac
+}
+
+detect_bundle_id_from_process_tree() {
+  local pid="${PPID:-}" depth=0 command parent bundle_id
+
+  while [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && [ "$depth" -lt 12 ]; do
+    command="$(ps -p "$pid" -o comm= 2>/dev/null || true)"
+    bundle_id="$(bundle_id_for_process_command "$command")"
+    if [ -n "$bundle_id" ]; then
+      printf '%s' "$bundle_id"
+      return 0
+    fi
+
+    parent="$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d '[:space:]' || true)"
+    [ -n "$parent" ] || break
+    [ "$parent" = "$pid" ] && break
+    pid="$parent"
+    depth=$((depth + 1))
+  done
+
+  printf '%s' ""
+}
+
 detect_bundle_id() {
+  local bundle_id
+
   if [ "$HAS_BUNDLE_ID" -eq 1 ]; then
     printf '%s' "$CODEX_ALARM_ACTIVATE_BUNDLE_ID"
     return 0
@@ -152,19 +221,272 @@ detect_bundle_id() {
     return 0
   fi
 
-  case "${TERM_PROGRAM-}" in
-    Apple_Terminal) printf '%s' "com.apple.Terminal" ;;
-    iTerm.app) printf '%s' "com.googlecode.iterm2" ;;
-    vscode) printf '%s' "com.microsoft.VSCode" ;;
-    Cursor) printf '%s' "com.todesktop.230313mzl4w4u92" ;;
-    ghostty|Ghostty) printf '%s' "com.mitchellh.ghostty" ;;
-    WarpTerminal) printf '%s' "dev.warp.Warp-Stable" ;;
-    *) printf '%s' "" ;;
-  esac
+  bundle_id="$(bundle_id_for_term_program "${TERM_PROGRAM-}")"
+  if [ -n "$bundle_id" ]; then
+    printf '%s' "$bundle_id"
+    return 0
+  fi
+
+  detect_bundle_id_from_process_tree
 }
 
-command_exists() {
-  command -v "$1" >/dev/null 2>&1
+builtin_sound_exists() {
+  local sound="$1"
+  [ -n "$sound" ] && [ -f "/System/Library/Sounds/$sound.aiff" ]
+}
+
+builtin_sound_path() {
+  local sound="$1"
+  printf '/System/Library/Sounds/%s.aiff' "$sound"
+}
+
+sound_doctor_status() {
+  local sound="$1"
+
+  if [ -z "$sound" ]; then
+    printf '%s\n' "WARN sound: empty; notification sound is disabled"
+  elif builtin_sound_exists "$sound"; then
+    printf '%s\n' "sound status: built-in macOS sound found"
+  elif [[ "$sound" == */* ]]; then
+    printf '%s\n' "WARN sound: '$sound' looks like a file path; use CODEX_ALARM_SOUND_FILE for custom sound files"
+  else
+    printf '%s\n' "WARN sound: '$sound' was not found in /System/Library/Sounds"
+  fi
+}
+
+custom_sound_doctor_status() {
+  local sound_file="$1"
+
+  if [ -z "$sound_file" ]; then
+    printf '%s\n' "custom sound file status: <not configured>"
+  elif [ ! -e "$sound_file" ]; then
+    printf '%s\n' "WARN custom sound file: '$sound_file' does not exist"
+  elif [ ! -f "$sound_file" ]; then
+    printf '%s\n' "WARN custom sound file: '$sound_file' is not a regular file"
+  elif [ ! -r "$sound_file" ]; then
+    printf '%s\n' "WARN custom sound file: '$sound_file' is not readable"
+  elif [ ! -x /usr/bin/afplay ]; then
+    printf '%s\n' "WARN custom sound file: /usr/bin/afplay is not available"
+  else
+    printf '%s\n' "custom sound file status: usable by afplay"
+  fi
+}
+
+sound_fallback_doctor_status() {
+  local path
+
+  if [ "$CODEX_ALARM_SOUND_FALLBACK" = "1" ]; then
+    printf '%s\n' "sound fallback: enabled"
+  else
+    printf '%s\n' "sound fallback: disabled"
+    printf '%s\n' "sound fallback playback: disabled"
+    return 0
+  fi
+
+  if [ -n "$CODEX_ALARM_SOUND_FILE" ]; then
+    printf '%s\n' "sound fallback playback: custom sound file is configured; fallback is not used"
+  elif [ -z "$CODEX_ALARM_SOUND" ]; then
+    printf '%s\n' "WARN sound fallback: CODEX_ALARM_SOUND is empty"
+  elif ! builtin_sound_exists "$CODEX_ALARM_SOUND"; then
+    printf '%s\n' "WARN sound fallback: built-in sound '$CODEX_ALARM_SOUND' was not found"
+  elif [ ! -x /usr/bin/afplay ]; then
+    printf '%s\n' "WARN sound fallback: /usr/bin/afplay is not available"
+  else
+    path="$(builtin_sound_path "$CODEX_ALARM_SOUND")"
+    printf '%s\n' "sound fallback playback: $path (afplay)"
+  fi
+}
+
+sound_summary() {
+  if [ -n "$CODEX_ALARM_SOUND_FILE" ]; then
+    printf 'custom file %s; fallback=not used' "$CODEX_ALARM_SOUND_FILE"
+  elif [ -z "$CODEX_ALARM_SOUND" ]; then
+    printf 'disabled; fallback=%s' "$([ "$CODEX_ALARM_SOUND_FALLBACK" = "1" ] && echo enabled || echo disabled)"
+  else
+    printf 'built-in %s; fallback=%s' "$CODEX_ALARM_SOUND" "$([ "$CODEX_ALARM_SOUND_FALLBACK" = "1" ] && echo enabled || echo disabled)"
+  fi
+}
+
+notification_sound_name() {
+  if [ -n "$CODEX_ALARM_SOUND_FILE" ]; then
+    printf '%s' ""
+  else
+    printf '%s' "$CODEX_ALARM_SOUND"
+  fi
+}
+
+custom_sound_file_usable() {
+  [ -n "$CODEX_ALARM_SOUND_FILE" ] || return 1
+  [ -f "$CODEX_ALARM_SOUND_FILE" ] || return 1
+  [ -r "$CODEX_ALARM_SOUND_FILE" ] || return 1
+  [ -x /usr/bin/afplay ] || return 1
+}
+
+config_line() {
+  local key="$1"
+  local value="$2"
+
+  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    echo "ERROR config value for $key contains a newline" >&2
+    return 1
+  fi
+
+  printf '%s="%s"\n' "$key" "$value"
+}
+
+update_sound_config() {
+  local new_sound="$1"
+  local new_sound_file="$2"
+  local new_sound_fallback="${3-__KEEP__}"
+  local tmp_file line stripped key sound_seen=0 sound_file_seen=0 sound_fallback_seen=0
+
+  mkdir -p "$CODEX_ALARM_HOME" || {
+    echo "ERROR could not create config directory: $CODEX_ALARM_HOME" >&2
+    return 1
+  }
+
+  tmp_file="$CONFIG_FILE.tmp.$$"
+  : > "$tmp_file" || {
+    echo "ERROR could not write temporary config: $tmp_file" >&2
+    return 1
+  }
+
+  if [ -f "$CONFIG_FILE" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      stripped="${line%%#*}"
+      stripped="$(trim "$stripped")"
+      key=""
+      if [[ "$stripped" == *=* ]]; then
+        key="$(trim "${stripped%%=*}")"
+      fi
+
+      case "$key" in
+        CODEX_ALARM_SOUND)
+          config_line CODEX_ALARM_SOUND "$new_sound" >> "$tmp_file" || return 1
+          sound_seen=1
+          ;;
+        CODEX_ALARM_SOUND_FILE)
+          config_line CODEX_ALARM_SOUND_FILE "$new_sound_file" >> "$tmp_file" || return 1
+          sound_file_seen=1
+          ;;
+        CODEX_ALARM_SOUND_FALLBACK)
+          if [ "$new_sound_fallback" = "__KEEP__" ]; then
+            printf '%s\n' "$line" >> "$tmp_file"
+          else
+            config_line CODEX_ALARM_SOUND_FALLBACK "$new_sound_fallback" >> "$tmp_file" || return 1
+          fi
+          sound_fallback_seen=1
+          ;;
+        *)
+          printf '%s\n' "$line" >> "$tmp_file"
+          ;;
+      esac
+    done < "$CONFIG_FILE"
+  fi
+
+  [ "$sound_seen" -eq 1 ] || config_line CODEX_ALARM_SOUND "$new_sound" >> "$tmp_file" || return 1
+  [ "$sound_file_seen" -eq 1 ] || config_line CODEX_ALARM_SOUND_FILE "$new_sound_file" >> "$tmp_file" || return 1
+  if [ "$new_sound_fallback" != "__KEEP__" ] && [ "$sound_fallback_seen" -eq 0 ]; then
+    config_line CODEX_ALARM_SOUND_FALLBACK "$new_sound_fallback" >> "$tmp_file" || return 1
+  fi
+
+  if [ -f "$CONFIG_FILE" ] && cmp -s "$tmp_file" "$CONFIG_FILE"; then
+    rm -f "$tmp_file"
+    return 0
+  fi
+
+  mv "$tmp_file" "$CONFIG_FILE"
+}
+
+safe_sound_filename() {
+  local name="$1"
+
+  name="${name##*/}"
+  while [[ "$name" == .* ]]; do
+    name="${name#.}"
+  done
+  name="${name//[^[:alnum:]._-]/_}"
+  [ -n "$name" ] || name="sound-file"
+  printf '%s' "$name"
+}
+
+print_presentation_checks() {
+  echo "presentation checks: read-only macOS Notification Center checklist"
+  echo "presentation check: doctor cannot inspect or change macOS notification permissions"
+  echo "presentation check: System Settings > Notifications > terminal-notifier > Allow Notifications on"
+  echo "presentation check: terminal-notifier alert style set to Banners or Alerts"
+  echo "presentation check: terminal-notifier Sounds enabled if you expect notification sound"
+  echo "presentation check: Focus / Do Not Disturb disabled or configured to allow terminal-notifier"
+  echo "presentation check: run $CODEX_ALARM_HOME/alarm test after changing macOS settings"
+  if [ "$(resolve_backend)" = "osascript" ]; then
+    echo "presentation check: osascript uses a generic script notification identity; terminal-notifier is recommended"
+  fi
+}
+
+print_click_to_focus_checks() {
+  local bundle_id="$1"
+
+  if [ -n "$bundle_id" ]; then
+    echo "click-to-focus target: $bundle_id"
+    echo "click-to-focus check: run $CODEX_ALARM_HOME/alarm test, then click the notification"
+    return 0
+  fi
+
+  echo "WARN no activate bundle ID configured: click-to-focus may be unavailable"
+  echo "click-to-focus setup: set CODEX_ALARM_ACTIVATE_BUNDLE_ID in $CONFIG_FILE"
+  echo "click-to-focus setup: find a bundle ID with osascript -e 'id of app \"App Name\"'"
+  echo "click-to-focus setup: common values include com.apple.Terminal, com.googlecode.iterm2, com.microsoft.VSCode, com.todesktop.230313mzl4w4u92, com.mitchellh.ghostty, and dev.warp.Warp-Stable"
+}
+
+play_custom_sound_file() {
+  local event="$1"
+
+  [ -n "$CODEX_ALARM_SOUND_FILE" ] || return 0
+
+  if ! custom_sound_file_usable; then
+    log_message "event=$event custom_sound_file=$(log_field "$CODEX_ALARM_SOUND_FILE") unavailable"
+    if should_print_backend_output "$event"; then
+      echo "WARN custom sound file unavailable: $CODEX_ALARM_SOUND_FILE" >&2
+    fi
+    return 0
+  fi
+
+  if should_print_backend_output "$event"; then
+    printf 'custom sound file: %s (afplay)\n' "$CODEX_ALARM_SOUND_FILE"
+  fi
+
+  [ "${CODEX_ALARM_DRY_RUN:-0}" = "1" ] && return 0
+
+  /usr/bin/afplay "$CODEX_ALARM_SOUND_FILE" </dev/null >/dev/null 2>&1 &
+  log_message "event=$event custom_sound_file=$(log_field "$CODEX_ALARM_SOUND_FILE") playback_started"
+  return 0
+}
+
+play_builtin_sound_fallback() {
+  local event="$1"
+  local path
+
+  [ "$CODEX_ALARM_SOUND_FALLBACK" = "1" ] || return 0
+  [ -z "$CODEX_ALARM_SOUND_FILE" ] || return 0
+
+  if [ -z "$CODEX_ALARM_SOUND" ] || ! builtin_sound_exists "$CODEX_ALARM_SOUND" || [ ! -x /usr/bin/afplay ]; then
+    log_message "event=$event sound_fallback=$(log_field "$CODEX_ALARM_SOUND") unavailable"
+    if should_print_backend_output "$event"; then
+      echo "WARN sound fallback unavailable: $CODEX_ALARM_SOUND" >&2
+    fi
+    return 0
+  fi
+
+  path="$(builtin_sound_path "$CODEX_ALARM_SOUND")"
+  if should_print_backend_output "$event"; then
+    printf 'sound fallback: %s (afplay)\n' "$path"
+  fi
+
+  [ "${CODEX_ALARM_DRY_RUN:-0}" = "1" ] && return 0
+
+  /usr/bin/afplay "$path" </dev/null >/dev/null 2>&1 &
+  log_message "event=$event sound_fallback=$(log_field "$path") playback_started"
+  return 0
 }
 
 resolve_backend() {
@@ -334,7 +656,7 @@ function run(argv) {
   var event = argv[0] || 'test';
   var backend = argv[1] || 'osascript';
   var bundleId = argv[2] || '';
-  var sound = argv[3] || 'Glass';
+  var sound = argv.length > 3 ? argv[3] : 'Glass';
   var alarmHome = argv[4] || '';
   var dryRun = argv[5] === '1';
   var payloadPath = argv[6] || '';
@@ -466,10 +788,16 @@ function run(argv) {
     }
 
     try {
-      app.displayNotification(body, { withTitle: title, soundName: sound });
+      if (sound) {
+        app.displayNotification(body, { withTitle: title, soundName: sound });
+      } else {
+        app.displayNotification(body, { withTitle: title });
+      }
       return true;
     } catch (errorWithSound) {
-      console.log('ERROR osascript notification with sound failed: ' + errorWithSound);
+      if (sound) {
+        console.log('ERROR osascript notification with sound failed: ' + errorWithSound);
+      }
       try {
         app.displayNotification(body, { withTitle: title });
         return true;
@@ -573,11 +901,12 @@ run_notification_once() {
   local payload_file="$4"
   local notifier_path="$5"
   local dry_run="$6"
-  local output_file script_file prepare_dir status message title body fingerprint suppressed remember_output project detail tool
+  local output_file script_file prepare_dir status message title body fingerprint suppressed remember_output project detail tool notification_sound
   local -a notifier_args
 
   output_file="${TMPDIR:-/tmp}/codex-alarm-backend.$$.$event.$backend.log"
   script_file="${TMPDIR:-/tmp}/codex-alarm-backend.$$.$event.$backend.js"
+  notification_sound="$(notification_sound_name)"
   if ! write_notification_jxa "$script_file" 2>/dev/null; then
     log_message "backend=$backend event=$event failed to prepare notification script"
     return 1
@@ -587,7 +916,7 @@ run_notification_once() {
     prepare_dir="${TMPDIR:-/tmp}/codex-alarm-prepare.$$.$event.$backend"
     mkdir -p "$prepare_dir" 2>/dev/null || true
     run_with_timeout "$CODEX_ALARM_BACKEND_TIMEOUT_SECONDS" "$output_file" \
-      /usr/bin/osascript -l JavaScript "$script_file" "$event" "$backend" "$bundle_id" "$CODEX_ALARM_SOUND" "$CODEX_ALARM_HOME" "$dry_run" "$payload_file" "$prepare_dir" "prepare"
+      /usr/bin/osascript -l JavaScript "$script_file" "$event" "$backend" "$bundle_id" "$notification_sound" "$CODEX_ALARM_HOME" "$dry_run" "$payload_file" "$prepare_dir" "prepare"
     status=$?
 
     if [ "$status" -eq 0 ]; then
@@ -610,7 +939,7 @@ run_notification_once() {
       else
         log_notification_attempt "$event" "$backend" "$project" "$tool" "$detail"
         notifier_args=(-title "$title" -message "$body" -group "codex-alarm-$event")
-        [ -n "$CODEX_ALARM_SOUND" ] && notifier_args+=(-sound "$CODEX_ALARM_SOUND")
+        [ -n "$notification_sound" ] && notifier_args+=(-sound "$notification_sound")
         [ -n "$bundle_id" ] && notifier_args+=(-activate "$bundle_id")
         run_process_group_with_timeout "$CODEX_ALARM_BACKEND_TIMEOUT_SECONDS" "$output_file" \
           "$notifier_path" "${notifier_args[@]}"
@@ -619,7 +948,7 @@ run_notification_once() {
         if [ "$status" -eq 0 ] && [ "$event" = "permission" ] && [ -n "$fingerprint" ]; then
           remember_output="${TMPDIR:-/tmp}/codex-alarm-backend.$$.$event.remember.log"
           run_with_timeout "$CODEX_ALARM_BACKEND_TIMEOUT_SECONDS" "$remember_output" \
-            /usr/bin/osascript -l JavaScript "$script_file" "$event" "$backend" "$bundle_id" "$CODEX_ALARM_SOUND" "$CODEX_ALARM_HOME" "$dry_run" "$fingerprint" "" "remember" || true
+            /usr/bin/osascript -l JavaScript "$script_file" "$event" "$backend" "$bundle_id" "$notification_sound" "$CODEX_ALARM_HOME" "$dry_run" "$fingerprint" "" "remember" || true
           rm -f "$remember_output" 2>/dev/null || true
         fi
       fi
@@ -633,7 +962,7 @@ run_notification_once() {
           prepare_dir="${TMPDIR:-/tmp}/codex-alarm-prepare.$$.$event.$backend"
           mkdir -p "$prepare_dir" 2>/dev/null || true
           run_with_timeout "$CODEX_ALARM_BACKEND_TIMEOUT_SECONDS" "$output_file" \
-            /usr/bin/osascript -l JavaScript "$script_file" "$event" "$backend" "$bundle_id" "$CODEX_ALARM_SOUND" "$CODEX_ALARM_HOME" "$dry_run" "$payload_file" "$prepare_dir" "prepare"
+            /usr/bin/osascript -l JavaScript "$script_file" "$event" "$backend" "$bundle_id" "$notification_sound" "$CODEX_ALARM_HOME" "$dry_run" "$payload_file" "$prepare_dir" "prepare"
           status=$?
           if [ "$status" -eq 0 ]; then
             suppressed="$(cat "$prepare_dir/suppressed" 2>/dev/null || true)"
@@ -663,7 +992,7 @@ run_notification_once() {
     fi
 
     run_with_timeout "$CODEX_ALARM_BACKEND_TIMEOUT_SECONDS" "$output_file" \
-      /usr/bin/osascript -l JavaScript "$script_file" "$event" "$backend" "$bundle_id" "$CODEX_ALARM_SOUND" "$CODEX_ALARM_HOME" "$dry_run" "$payload_file" "$notifier_path" "send"
+      /usr/bin/osascript -l JavaScript "$script_file" "$event" "$backend" "$bundle_id" "$notification_sound" "$CODEX_ALARM_HOME" "$dry_run" "$payload_file" "$notifier_path" "send"
     status=$?
   fi
 
@@ -691,6 +1020,10 @@ run_notification_once() {
 
   rm -f "$output_file" 2>/dev/null || true
   rm -f "$script_file" 2>/dev/null || true
+  if [ "$status" -eq 0 ]; then
+    play_custom_sound_file "$event"
+    play_builtin_sound_fallback "$event"
+  fi
   return "$status"
 }
 
@@ -830,11 +1163,17 @@ doctor() {
   echo "notify on stop: $CODEX_ALARM_NOTIFY_ON_STOP"
   echo "notify on permission: $CODEX_ALARM_NOTIFY_ON_PERMISSION"
   echo "sound: $CODEX_ALARM_SOUND"
+  sound_doctor_status "$CODEX_ALARM_SOUND"
+  echo "custom sound file: ${CODEX_ALARM_SOUND_FILE:-<not configured>}"
+  custom_sound_doctor_status "$CODEX_ALARM_SOUND_FILE"
+  [ -z "$CODEX_ALARM_SOUND_FILE" ] || echo "sound source: custom sound file; built-in notification sound is suppressed"
+  sound_fallback_doctor_status
   echo "activate bundle ID: ${bundle_id:-<not configured>}"
   echo "backend timeout seconds: $CODEX_ALARM_BACKEND_TIMEOUT_SECONDS"
   echo "osascript fallback: $([ "$CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK" = "1" ] && echo enabled || echo disabled)"
   echo "log file: $CODEX_ALARM_HOME/alarm.log"
   echo "hooks scope: user-level global hooks may notify from any active Codex session using $CODEX_HOME"
+  echo "diagnostic flow: hooks -> backend resolution -> backend availability -> macOS presentation"
 
   if [ -n "$CONFIG_ERROR" ]; then
     echo "ERROR config invalid: $CONFIG_ERROR"
@@ -966,9 +1305,522 @@ JXA
     echo "WARN hooks.json missing: $hooks_file"
   fi
 
-  [ -n "$bundle_id" ] || echo "WARN no activate bundle ID configured: click-to-focus may be unavailable"
+  print_click_to_focus_checks "$bundle_id"
+  print_presentation_checks
   echo "Run /hooks inside Codex to verify the Codex Alarm hooks are trusted."
   return "$exit_code"
+}
+
+status_command() {
+  local exit_code=0 backend bundle_id hooks_file installed_path log_file latest_log hook_report
+  backend="$(resolve_backend)"
+  bundle_id="$(detect_bundle_id)"
+  hooks_file="$CODEX_HOME/hooks.json"
+  installed_path="$CODEX_ALARM_HOME/alarm"
+  log_file="$CODEX_ALARM_HOME/alarm.log"
+
+  echo "Codex Alarm status"
+  echo "version: $VERSION"
+  echo "installed executable: $installed_path"
+  if [ -f "$installed_path" ]; then
+    echo "installed executable status: found"
+  elif [ "$0" = "$installed_path" ]; then
+    echo "ERROR installed executable status: missing"
+    exit_code=1
+  else
+    echo "installed executable status: missing"
+  fi
+  echo "backend: configured=$CODEX_ALARM_BACKEND resolved=$backend"
+  echo "notifications: stop=$CODEX_ALARM_NOTIFY_ON_STOP permission=$CODEX_ALARM_NOTIFY_ON_PERMISSION"
+  echo "sound: $(sound_summary)"
+  echo "click target: ${bundle_id:-<not configured>}"
+  echo "log file: $log_file"
+  if [ -f "$log_file" ]; then
+    latest_log="$(tail -n 1 "$log_file" 2>/dev/null || true)"
+    echo "latest log: ${latest_log:-<empty>}"
+  else
+    echo "latest log: <none>"
+  fi
+
+  if [ "$(uname -s)" != "Darwin" ]; then
+    echo "ERROR platform unsupported: $(uname -s)"
+    exit_code=1
+  fi
+  if ! command_exists /usr/bin/osascript; then
+    echo "ERROR osascript: missing"
+    exit_code=1
+  fi
+  if [ -n "$CONFIG_ERROR" ]; then
+    echo "ERROR config invalid: $CONFIG_ERROR"
+    exit_code=1
+  fi
+
+  if [ -f "$hooks_file" ]; then
+    if hook_report="$(/usr/bin/osascript -l JavaScript - "$hooks_file" "$installed_path" 2>/dev/null <<'JXA'
+function run(argv) {
+  var path = argv[0];
+  var alarmPath = argv[1] || '';
+  ObjC.import('Foundation');
+  var text = ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(path, $.NSUTF8StringEncoding, null));
+  var doc = JSON.parse(text || '{}');
+  var hooks = doc && doc.hooks && typeof doc.hooks === 'object' && !Array.isArray(doc.hooks) ? doc.hooks : {};
+  var stopCount = 0;
+  var permissionCount = 0;
+  function hasInstalledCommand(command, subcommand) {
+    if (!alarmPath || command.indexOf(alarmPath) === -1) return false;
+    var rest = command.slice(command.indexOf(alarmPath) + alarmPath.length).trim();
+    if (rest.charCodeAt(0) === 34 || rest.charCodeAt(0) === 39) {
+      rest = rest.slice(1).trim();
+    }
+    return rest.split(/\s+/)[0] === subcommand;
+  }
+  Object.keys(hooks).forEach(function(eventName) {
+    var groups = Array.isArray(hooks[eventName]) ? hooks[eventName] : [];
+    groups.forEach(function(group) {
+      var entries = group && Array.isArray(group.hooks) ? group.hooks : [];
+      entries.forEach(function(hook) {
+        var command = String((hook && hook.command) || '');
+        if (eventName === 'Stop' && hasInstalledCommand(command, 'stop')) {
+          stopCount++;
+        }
+        if (eventName === 'PermissionRequest' && hasInstalledCommand(command, 'permission')) {
+          permissionCount++;
+        }
+      });
+    });
+  });
+  return 'hooks: Stop=' + (stopCount > 0 ? 'found' : 'missing') +
+    ' PermissionRequest=' + (permissionCount > 0 ? 'found' : 'missing');
+}
+JXA
+)"
+    then
+      echo "$hook_report"
+    else
+      echo "ERROR hooks.json is invalid JSON: $hooks_file"
+      exit_code=1
+    fi
+  else
+    echo "hooks: Stop=missing PermissionRequest=missing (hooks.json missing)"
+  fi
+
+  return "$exit_code"
+}
+
+hooks_usage() {
+  cat <<'EOF'
+Usage: alarm hooks
+EOF
+}
+
+hooks_command() {
+  local hooks_file="$CODEX_HOME/hooks.json"
+  local installed_path="$CODEX_ALARM_HOME/alarm"
+  local hook_report
+
+  if [ "$#" -ne 0 ]; then
+    echo "hooks does not accept arguments" >&2
+    hooks_usage >&2
+    return 2
+  fi
+
+  echo "Codex Alarm hooks"
+  echo "hooks file: $hooks_file"
+  echo "expected Stop command: $installed_path stop"
+  echo "expected PermissionRequest command: $installed_path permission"
+  echo "trust UI: run /hooks inside Codex to review or trust hooks"
+
+  if [ ! -f "$hooks_file" ]; then
+    echo "WARN hooks.json missing: $hooks_file"
+    echo "hooks: Codex Alarm entries 0"
+    echo "hooks: Stop hook entries 0"
+    echo "hooks: PermissionRequest hook entries 0"
+    echo "WARN hooks: Stop hook not found"
+    echo "WARN hooks: PermissionRequest hook not found"
+    return 0
+  fi
+
+  if ! command_exists /usr/bin/osascript; then
+    echo "ERROR hooks inspection requires /usr/bin/osascript"
+    return 1
+  fi
+
+  if hook_report="$(/usr/bin/osascript -l JavaScript - "$hooks_file" "$installed_path" 2>/dev/null <<'JXA'
+function run(argv) {
+  var path = argv[0];
+  var alarmPath = argv[1] || '';
+  ObjC.import('Foundation');
+  var text = ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(path, $.NSUTF8StringEncoding, null));
+  var doc = JSON.parse(text || '{}');
+  var hooks = doc && doc.hooks && typeof doc.hooks === 'object' && !Array.isArray(doc.hooks) ? doc.hooks : {};
+  var alarmEntries = [];
+  var warnings = [];
+  var alarmCount = 0;
+  var stopCount = 0;
+  var permissionCount = 0;
+  var staleCount = 0;
+
+  function trim(value) {
+    return String(value || '').replace(/^\s+|\s+$/g, '');
+  }
+
+  function display(value) {
+    value = String(value || '');
+    return value ? value : '<missing>';
+  }
+
+  function startsWith(value, prefix) {
+    return String(value || '').indexOf(prefix) === 0;
+  }
+
+  function expectedSubcommand(eventName) {
+    if (eventName === 'Stop') return 'stop';
+    if (eventName === 'PermissionRequest') return 'permission';
+    return '';
+  }
+
+  function commandInfo(command) {
+    var source = trim(command);
+    var commandPath = '';
+    var rest = '';
+    var quote = source.charAt(0);
+    var end = -1;
+    if (quote === '"' || quote === "'") {
+      end = source.indexOf(quote, 1);
+      if (end !== -1) {
+        commandPath = source.slice(1, end);
+        rest = trim(source.slice(end + 1));
+      }
+    }
+    if (!commandPath) {
+      var match = source.match(/^(\S+)(?:\s+(.*))?$/);
+      if (match) {
+        commandPath = match[1] || '';
+        rest = trim(match[2] || '');
+      }
+    }
+    return {
+      path: commandPath,
+      subcommand: rest.split(/\s+/)[0] || ''
+    };
+  }
+
+  function isAlarmHook(command, status, info) {
+    return startsWith(status, 'Codex Alarm:') ||
+      command.indexOf('/alarm/alarm') !== -1 ||
+      (alarmPath && info.path === alarmPath);
+  }
+
+  Object.keys(hooks).forEach(function(eventName) {
+    var groups = Array.isArray(hooks[eventName]) ? hooks[eventName] : [];
+    groups.forEach(function(group, groupIndex) {
+      var entries = group && Array.isArray(group.hooks) ? group.hooks : [];
+      entries.forEach(function(hook, hookIndex) {
+        var command = String((hook && hook.command) || '');
+        var status = String((hook && (hook.statusMessage || hook.status_message)) || '');
+        var timeout = hook && hook.timeout !== undefined ? String(hook.timeout) : '<missing>';
+        var info = commandInfo(command);
+        var expected = expectedSubcommand(eventName);
+        var valid = expected && alarmPath && info.path === alarmPath && info.subcommand === expected;
+        var alarmHook = isAlarmHook(command, status, info);
+        var commandPathMismatch = expected && alarmHook && info.subcommand === expected && info.path && info.path !== alarmPath;
+        var statusParts = [];
+
+        if (!alarmHook) return;
+
+        alarmCount++;
+        if (valid && eventName === 'Stop') stopCount++;
+        if (valid && eventName === 'PermissionRequest') permissionCount++;
+
+        if (valid) {
+          statusParts.push('installed');
+        } else {
+          statusParts.push('stale');
+          staleCount++;
+        }
+        if (commandPathMismatch) {
+          statusParts.push('command path mismatch');
+          warnings.push('WARN hooks: ' + eventName + ' command path mismatch: ' + display(command) + ' (expected ' + alarmPath + ' ' + expected + ')');
+        }
+
+        alarmEntries.push({
+          eventName: eventName,
+          groupIndex: groupIndex,
+          hookIndex: hookIndex,
+          command: command,
+          commandPath: info.path,
+          subcommand: info.subcommand,
+          timeout: timeout,
+          statusMessage: status,
+          status: statusParts.join('; ')
+        });
+      });
+    });
+  });
+
+  var output = [
+    'hooks: Codex Alarm entries ' + alarmCount,
+    'hooks: Stop hook entries ' + stopCount,
+    'hooks: PermissionRequest hook entries ' + permissionCount
+  ];
+
+  if (stopCount > 0 && permissionCount > 0) {
+    output.push('hooks: required entries present');
+  }
+  if (stopCount === 0) {
+    output.push('WARN hooks: Stop hook not found');
+  }
+  if (permissionCount === 0) {
+    output.push('WARN hooks: PermissionRequest hook not found');
+  }
+  if (staleCount > 0) {
+    output.push('WARN hooks: stale Codex Alarm entries ' + staleCount);
+  }
+  warnings.forEach(function(warning) {
+    output.push(warning);
+  });
+
+  alarmEntries.forEach(function(entry) {
+    output.push('hook entry: event=' + entry.eventName + ' group=' + entry.groupIndex + ' hook=' + entry.hookIndex);
+    output.push('hook command: ' + display(entry.command));
+    output.push('hook command path: ' + display(entry.commandPath));
+    output.push('hook command subcommand: ' + display(entry.subcommand));
+    output.push('hook timeout: ' + entry.timeout);
+    output.push('hook statusMessage: ' + display(entry.statusMessage));
+    output.push('hook status: ' + entry.status);
+  });
+
+  return output.join('\n');
+}
+JXA
+)"
+  then
+    echo "hooks.json: valid JSON"
+    echo "$hook_report"
+    return 0
+  fi
+
+  echo "ERROR hooks.json is invalid JSON: $hooks_file"
+  return 1
+}
+
+config_usage() {
+  cat <<'EOF'
+Usage: alarm config [path]
+EOF
+}
+
+config_command() {
+  local exit_code=0 backend
+
+  case "${1-}" in
+    "")
+      ;;
+    path)
+      if [ "$#" -ne 1 ]; then
+        echo "config path does not accept extra arguments" >&2
+        config_usage >&2
+        return 2
+      fi
+      echo "$CONFIG_FILE"
+      return 0
+      ;;
+    *)
+      echo "Unknown config argument: $1" >&2
+      config_usage >&2
+      return 2
+      ;;
+  esac
+
+  backend="$(resolve_backend)"
+
+  echo "Codex Alarm config"
+  echo "config file: $CONFIG_FILE"
+  if [ -f "$CONFIG_FILE" ]; then
+    echo "config file status: found"
+  else
+    echo "config file status: missing; using defaults and environment overrides"
+  fi
+  echo "CODEX_ALARM_BACKEND=$CODEX_ALARM_BACKEND"
+  echo "backend resolved: $backend"
+  echo "CODEX_ALARM_ACTIVATE_BUNDLE_ID=$CODEX_ALARM_ACTIVATE_BUNDLE_ID"
+  echo "CODEX_ALARM_SOUND=$CODEX_ALARM_SOUND"
+  sound_doctor_status "$CODEX_ALARM_SOUND"
+  echo "CODEX_ALARM_SOUND_FILE=$CODEX_ALARM_SOUND_FILE"
+  custom_sound_doctor_status "$CODEX_ALARM_SOUND_FILE"
+  echo "CODEX_ALARM_SOUND_FALLBACK=$CODEX_ALARM_SOUND_FALLBACK"
+  sound_fallback_doctor_status
+  echo "CODEX_ALARM_NOTIFY_ON_STOP=$CODEX_ALARM_NOTIFY_ON_STOP"
+  echo "CODEX_ALARM_NOTIFY_ON_PERMISSION=$CODEX_ALARM_NOTIFY_ON_PERMISSION"
+  echo "CODEX_ALARM_BACKEND_TIMEOUT_SECONDS=$CODEX_ALARM_BACKEND_TIMEOUT_SECONDS"
+  echo "CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK=$CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK"
+
+  if [ -n "$CONFIG_ERROR" ]; then
+    echo "ERROR config invalid: $CONFIG_ERROR"
+    exit_code=1
+  fi
+
+  return "$exit_code"
+}
+
+logs_usage() {
+  cat <<'EOF'
+Usage: alarm logs [--tail <n>|path]
+EOF
+}
+
+logs_command() {
+  local log_file="$CODEX_ALARM_HOME/alarm.log"
+  local tail_count=20
+
+  case "${1-}" in
+    "")
+      ;;
+    path)
+      if [ "$#" -ne 1 ]; then
+        echo "logs path does not accept extra arguments" >&2
+        logs_usage >&2
+        return 2
+      fi
+      echo "$log_file"
+      return 0
+      ;;
+    --tail)
+      if [ "$#" -ne 2 ]; then
+        echo "logs --tail requires a line count" >&2
+        logs_usage >&2
+        return 2
+      fi
+      tail_count="$2"
+      ;;
+    *)
+      echo "Unknown logs argument: $1" >&2
+      logs_usage >&2
+      return 2
+      ;;
+  esac
+
+  if [[ "$tail_count" == "" || "$tail_count" == *[!0-9]* ]] || [ "$tail_count" -lt 1 ] || [ "$tail_count" -gt 1000 ]; then
+    echo "logs --tail must be a positive integer between 1 and 1000" >&2
+    return 2
+  fi
+
+  if [ ! -e "$log_file" ]; then
+    echo "No Codex Alarm log found at $log_file"
+    echo "Logs are created after notification attempts or backend failures."
+    return 0
+  fi
+
+  if [ ! -f "$log_file" ] || [ ! -r "$log_file" ]; then
+    echo "ERROR log file is not readable: $log_file" >&2
+    return 1
+  fi
+
+  tail -n "$tail_count" "$log_file"
+}
+
+test_command() {
+  local test_status=0
+
+  echo "Codex Alarm test: osascript fallback $([ "$CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK" = "1" ] && echo enabled || echo disabled)"
+  printf '' | run_notification test || test_status=1
+  sleep 1
+  printf '' | run_notification test-permission || test_status=1
+  return "$test_status"
+}
+
+sound_usage() {
+  cat <<'EOF'
+Usage: alarm sound <import <file>|set <name>|off|test>
+EOF
+}
+
+sound_command() {
+  local source copy_source sounds_dir safe_name dest
+
+  case "${1-}" in
+    import)
+      if [ "$#" -ne 2 ]; then
+        echo "sound import requires one file path" >&2
+        sound_usage >&2
+        return 2
+      fi
+      source="$2"
+      if [ ! -e "$source" ]; then
+        echo "ERROR sound file does not exist: $source" >&2
+        return 1
+      fi
+      if [ ! -f "$source" ]; then
+        echo "ERROR sound file is not a regular file: $source" >&2
+        return 1
+      fi
+      if [ ! -r "$source" ]; then
+        echo "ERROR sound file is not readable: $source" >&2
+        return 1
+      fi
+
+      sounds_dir="$CODEX_ALARM_HOME/sounds"
+      mkdir -p "$sounds_dir" || {
+        echo "ERROR could not create sounds directory: $sounds_dir" >&2
+        return 1
+      }
+      safe_name="$(safe_sound_filename "$source")"
+      dest="$sounds_dir/$safe_name"
+      copy_source="$source"
+      [[ "$copy_source" == -* ]] && copy_source="./$copy_source"
+      cp "$copy_source" "$dest" || {
+        echo "ERROR could not copy sound file to: $dest" >&2
+        return 1
+      }
+      update_sound_config "$CODEX_ALARM_SOUND" "$dest" || return 1
+      echo "Imported sound file: $dest"
+      echo "Updated config: $CONFIG_FILE"
+      ;;
+    set)
+      if [ "$#" -ne 2 ]; then
+        echo "sound set requires one built-in sound name" >&2
+        sound_usage >&2
+        return 2
+      fi
+      if [[ "$2" == */* || -z "$2" ]]; then
+        echo "ERROR built-in sound name must not be empty or contain a slash" >&2
+        return 1
+      fi
+      if ! builtin_sound_exists "$2"; then
+        echo "ERROR built-in macOS sound not found: $2" >&2
+        return 1
+      fi
+      update_sound_config "$2" "" || return 1
+      echo "Sound set: $2"
+      echo "Updated config: $CONFIG_FILE"
+      ;;
+    off)
+      if [ "$#" -ne 1 ]; then
+        echo "sound off does not accept extra arguments" >&2
+        sound_usage >&2
+        return 2
+      fi
+      update_sound_config "" "" "0" || return 1
+      echo "Sound disabled"
+      echo "Updated config: $CONFIG_FILE"
+      ;;
+    test)
+      if [ "$#" -ne 1 ]; then
+        echo "sound test does not accept extra arguments" >&2
+        sound_usage >&2
+        return 2
+      fi
+      test_command
+      ;;
+    -h|--help|help|"")
+      sound_usage
+      ;;
+    *)
+      echo "Unknown sound command: $1" >&2
+      sound_usage >&2
+      return 2
+      ;;
+  esac
 }
 
 usage() {
@@ -979,6 +1831,11 @@ Commands:
   stop        Codex Stop hook entrypoint
   permission  Codex PermissionRequest hook entrypoint
   test        Send test notifications
+  sound       Configure and test notification sounds
+  status      Print a concise health summary
+  config      Print effective configuration
+  hooks       Inspect installed Codex Alarm hooks
+  logs        Print recent notification/backend log entries
   doctor      Print diagnostics
   version     Print version
 EOF
@@ -997,12 +1854,26 @@ case "${1-}" in
     exit 0
     ;;
   test)
-    test_status=0
-    echo "Codex Alarm test: osascript fallback $([ "$CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK" = "1" ] && echo enabled || echo disabled)"
-    printf '' | run_notification test || test_status=1
-    sleep 1
-    printf '' | run_notification test-permission || test_status=1
-    exit "$test_status"
+    test_command
+    ;;
+  sound)
+    shift
+    sound_command "$@"
+    ;;
+  status)
+    status_command
+    ;;
+  config)
+    shift
+    config_command "$@"
+    ;;
+  hooks)
+    shift
+    hooks_command "$@"
+    ;;
+  logs)
+    shift
+    logs_command "$@"
     ;;
   doctor)
     doctor

@@ -10,6 +10,8 @@ bash -n bin/alarm install.sh uninstall.sh test/smoke.sh
 shellcheck bin/alarm install.sh uninstall.sh test/smoke.sh
 ```
 
+Before release, confirm the smoke output covers fake failing and hung notification backends, including nonzero `alarm test` results, hook silence, process cleanup, and `alarm.log` timeout/failure entries.
+
 Confirm the GitHub Actions smoke workflow passes on macOS.
 
 ## Manual Local Checks

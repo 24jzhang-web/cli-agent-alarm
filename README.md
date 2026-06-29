@@ -27,6 +27,8 @@ Codex Alarm is local-only. It does not send telemetry and does not make network 
 The installer modifies your user-level Codex setup:
 
 - installs `alarm` under `${CODEX_HOME:-~/.codex}/alarm/`
+- creates or refreshes a convenience symlink at `~/.local/bin/agent-alarm`
+- adds `~/.local/bin` to your shell startup file with a marked Codex Alarm block when needed
 - creates `${CODEX_HOME:-~/.codex}/alarm/config` if missing
 - writes dedupe state to `${CODEX_HOME:-~/.codex}/alarm/state.json` when permission notifications are sent
 - writes concise notification attribution logs to `${CODEX_HOME:-~/.codex}/alarm/alarm.log`
@@ -50,6 +52,8 @@ If you downloaded a ZIP from GitHub, unzip it, open the folder in Terminal, then
 
 The dry run prints planned file and hook changes without writing them.
 
+The installer also sets up the short `agent-alarm` command by adding `~/.local/bin` to your shell startup file, such as `~/.zshrc` or `~/.bashrc`. If your current terminal does not see it immediately, open a new terminal or source the file printed by the installer.
+
 For the intended macOS experience, install `terminal-notifier`:
 
 ```sh
@@ -71,14 +75,15 @@ git pull
 
 If you installed from a ZIP, download the new ZIP, unzip it, then run `./install.sh --dry-run` and `./install.sh` from the new folder.
 
-The installer replaces the installed `~/.codex/alarm/alarm` executable, refreshes Codex Alarm hook entries, creates a timestamped `hooks.json` backup, preserves existing config values, and appends any new default config keys. After updating, restart Codex, run `/hooks`, review and trust the refreshed hooks, then run:
+The installer replaces the installed `~/.codex/alarm/alarm` executable, refreshes the `agent-alarm` convenience symlink, refreshes Codex Alarm hook entries, creates a timestamped `hooks.json` backup, preserves existing config values, and appends any new default config keys. After updating, restart Codex, run `/hooks`, review and trust the refreshed hooks, then run:
 
 ```sh
-~/.codex/alarm/alarm test
-~/.codex/alarm/alarm doctor
+agent-alarm test
+agent-alarm status
+agent-alarm doctor
 ```
 
-For v1.1, make sure `terminal-notifier` is installed and allowed in macOS Notification settings. `osascript` fallback is now disabled by default; enable `CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK="1"` only if you intentionally want generic macOS script notifications when `terminal-notifier` is unavailable.
+For v1.1 and later, make sure `terminal-notifier` is installed and allowed in macOS Notification settings. `osascript` fallback is disabled by default; enable `CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK="1"` only if you intentionally want generic macOS script notifications when `terminal-notifier` is unavailable.
 
 ## Verify Install
 
@@ -91,8 +96,23 @@ Restart Codex, then run:
 Review and trust the Codex Alarm hooks. Then test notifications and diagnostics:
 
 ```sh
+agent-alarm test
+agent-alarm status
+agent-alarm doctor
+```
+
+If `agent-alarm` is not found, use the full installed path:
+
+```sh
 ~/.codex/alarm/alarm test
+~/.codex/alarm/alarm status
 ~/.codex/alarm/alarm doctor
+```
+
+You can also add the command path manually:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 ## Full Click-to-Focus
@@ -108,12 +128,12 @@ brew install terminal-notifier
 Then run a test once so macOS can register the notification sender:
 
 ```sh
-~/.codex/alarm/alarm test
+agent-alarm test
 ```
 
 On many Macs, `terminal-notifier` starts with notifications disabled until you allow it. Open **System Settings > Notifications > terminal-notifier** and enable notifications, banners or alerts, and sounds. Also check that Focus / Do Not Disturb is not hiding banners.
 
-Set your terminal app bundle ID in `~/.codex/alarm/config`:
+Codex Alarm auto-detects common macOS terminal/editor hosts from `TERM_PROGRAM` and a conservative parent-process check. Explicit config always wins, so set your terminal app bundle ID in `~/.codex/alarm/config` if clicking the notification opens the wrong app or does nothing:
 
 ```sh
 CODEX_ALARM_ACTIVATE_BUNDLE_ID="com.apple.Terminal"
@@ -135,6 +155,16 @@ Find another app's bundle ID with:
 ```sh
 osascript -e 'id of app "App Name"'
 ```
+
+Then add it to `~/.codex/alarm/config`:
+
+```sh
+CODEX_ALARM_ACTIVATE_BUNDLE_ID="com.example.YourApp"
+```
+
+Run `agent-alarm doctor` to confirm the configured target, then run `agent-alarm test` and click the notification.
+
+This activation behavior is macOS-specific and uses `terminal-notifier -activate <bundle-id>`. Windows notification activation is intentionally not promised here; Windows foreground-window rules are different and are planned for a separate Windows support slice.
 
 macOS controls whether notifications appear as temporary banners or persistent alerts in System Settings.
 
@@ -175,6 +205,8 @@ Default config:
 CODEX_ALARM_BACKEND="auto"
 CODEX_ALARM_ACTIVATE_BUNDLE_ID=""
 CODEX_ALARM_SOUND="Glass"
+CODEX_ALARM_SOUND_FILE=""
+CODEX_ALARM_SOUND_FALLBACK="0"
 CODEX_ALARM_NOTIFY_ON_STOP="1"
 CODEX_ALARM_NOTIFY_ON_PERMISSION="1"
 CODEX_ALARM_BACKEND_TIMEOUT_SECONDS="3"
@@ -193,7 +225,7 @@ CODEX_ALARM_HOME="$CODEX_HOME/alarm"
 Dry-run notification delivery:
 
 ```sh
-CODEX_ALARM_DRY_RUN=1 ~/.codex/alarm/alarm test
+CODEX_ALARM_DRY_RUN=1 agent-alarm test
 ```
 
 `alarm test` prints whether `osascript` fallback is enabled. Missing, failing, or timed-out `terminal-notifier` makes `alarm test` exit nonzero even if an explicitly enabled `osascript` fallback can still deliver a banner afterward. It cannot prove macOS actually displayed a visible banner, because Notification Center, app notification permissions, and Focus / Do Not Disturb are controlled by macOS.
@@ -201,19 +233,106 @@ CODEX_ALARM_DRY_RUN=1 ~/.codex/alarm/alarm test
 Temporary overrides are useful for quick checks:
 
 ```sh
-CODEX_ALARM_SOUND="Ping" ~/.codex/alarm/alarm test
-CODEX_ALARM_BACKEND="osascript" ~/.codex/alarm/alarm test
-CODEX_ALARM_BACKEND="terminal-notifier" CODEX_ALARM_ACTIVATE_BUNDLE_ID="com.apple.Terminal" ~/.codex/alarm/alarm test
-CODEX_ALARM_BACKEND="terminal-notifier" CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK="0" ~/.codex/alarm/alarm test
+CODEX_ALARM_SOUND="Ping" agent-alarm test
+CODEX_ALARM_BACKEND="osascript" agent-alarm test
+CODEX_ALARM_BACKEND="terminal-notifier" CODEX_ALARM_ACTIVATE_BUNDLE_ID="com.apple.Terminal" agent-alarm test
+CODEX_ALARM_BACKEND="terminal-notifier" CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK="0" agent-alarm test
 ```
+
+## Sound Selection
+
+`CODEX_ALARM_SOUND` uses a built-in macOS notification sound name. Common built-in names include:
+
+```text
+Basso
+Blow
+Bottle
+Frog
+Funk
+Glass
+Hero
+Morse
+Ping
+Pop
+Purr
+Sosumi
+Submarine
+Tink
+```
+
+Set one with the sound command:
+
+```sh
+agent-alarm sound set Ping
+```
+
+Or test one temporarily:
+
+```sh
+CODEX_ALARM_SOUND="Submarine" agent-alarm test
+```
+
+Run `agent-alarm doctor` after changing it. Doctor warns when the sound is empty, looks like a file path, or is not found in `/System/Library/Sounds`.
+
+For a custom macOS sound file, import a readable local file. Codex Alarm copies it into a managed `~/.codex/alarm/sounds` folder and updates config to use that copy:
+
+```sh
+agent-alarm sound import ~/Music/codex-done.mp3
+```
+
+Common formats such as `.mp3`, `.m4a`, `.wav`, and `.aiff` can work without extra runtime packages because Codex Alarm plays custom files with macOS `afplay`.
+
+To disable all notification sound while keeping banners enabled:
+
+```sh
+agent-alarm sound off
+```
+
+To test the saved sound configuration:
+
+```sh
+agent-alarm sound test
+```
+
+Temporary overrides still work for quick checks:
+
+```sh
+CODEX_ALARM_SOUND_FILE="$HOME/Music/codex-done.mp3" agent-alarm test
+```
+
+When `CODEX_ALARM_SOUND_FILE` is set, Codex Alarm suppresses the built-in notification sound and plays the custom file separately. This keeps banner delivery separate from audio playback, so a missing or unreadable custom sound file is logged and warned about by `doctor`, but hooks still stay silent and do not block Codex.
+
+If macOS shows banners but does not play notification sound, enable the explicit sound fallback:
+
+```sh
+CODEX_ALARM_SOUND_FALLBACK="1"
+```
+
+The fallback uses `/usr/bin/afplay` to play the configured built-in `CODEX_ALARM_SOUND` after banner delivery succeeds. It is off by default because it can duplicate normal notification sounds. It is ignored when `CODEX_ALARM_SOUND_FILE` is configured, since custom sound files already play separately.
+
+Windows custom sounds are deferred until after the Windows notification backend research/MVP.
+Windows sound fallback behavior is also deferred until Windows notification support is implemented and tested.
 
 ## Commands
 
 ```sh
-~/.codex/alarm/alarm test
-~/.codex/alarm/alarm doctor
-~/.codex/alarm/alarm version
+agent-alarm test
+agent-alarm sound import ~/Music/codex-done.mp3
+agent-alarm sound set Ping
+agent-alarm sound off
+agent-alarm sound test
+agent-alarm status
+agent-alarm config
+agent-alarm hooks
+agent-alarm logs
+agent-alarm doctor
+agent-alarm version
 ```
+
+Use `agent-alarm status` as the quick first check. It prints the installed path, hook presence, backend, notification flags, sound summary, click target, log path, and latest log line. Use `agent-alarm doctor` when you need the deeper troubleshooting checklist.
+Use `agent-alarm config` to inspect the effective read-only configuration after config-file loading and environment overrides. Use `agent-alarm config path` to print only the config file path.
+Use `agent-alarm hooks` for hook-specific inspection. It reads user-level `hooks.json` and reports Codex Alarm hook entries, command paths, timeouts, status messages, stale entries, missing entries, invalid JSON, and command path mismatches without editing or trusting hooks.
+Use `agent-alarm logs` to inspect recent notification attribution and backend failure entries. Use `agent-alarm logs --tail 50` for more lines, or `agent-alarm logs path` to print only the log file path.
 
 Hook entrypoints are installed automatically:
 
@@ -232,7 +351,7 @@ Each real completion or approval notification attempt writes one concise line to
 ./uninstall.sh
 ```
 
-Uninstall removes only Codex Alarm hook entries and the installed alarm executable. It creates a hook backup before editing, leaves unrelated hooks untouched, asks before removing config, and does not remove `terminal-notifier`.
+Uninstall removes only Codex Alarm hook entries, the installed alarm executable, the `agent-alarm` symlink when it points at Codex Alarm, and the marked Codex Alarm PATH block from your shell startup file. It creates backups before editing hooks or an existing shell startup file, leaves unrelated hooks and shell config untouched, asks before removing config, and does not remove `terminal-notifier`.
 
 ## Security
 
@@ -254,26 +373,49 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Troubleshooting
 
-Run:
+Start with:
 
 ```sh
-~/.codex/alarm/alarm doctor
+agent-alarm status
+```
+
+If that surfaces a problem or notifications still do not appear, run:
+
+```sh
+agent-alarm doctor
 ```
 
 Common checks:
 
+Hook checks:
+
 - Restart Codex after install.
 - Run `/hooks` and trust the Codex Alarm hooks.
+- Run `agent-alarm hooks` to inspect hook entries, command paths, timeouts, and stale or mismatched entries. `/hooks` remains the Codex UI for reviewing and trusting hooks.
+- If a notification seems to come from the wrong project, run `agent-alarm logs`; Codex Alarm hooks are user-level and can fire from any active Codex session using the same `CODEX_HOME`.
+
+Backend checks:
+
 - Install `terminal-notifier` for the recommended backend.
-- After installing `terminal-notifier`, enable it in **System Settings > Notifications > terminal-notifier**.
-- Run `~/.codex/alarm/alarm doctor` and review any warnings.
-- Run `~/.codex/alarm/alarm test`; if it fails, check `~/.codex/alarm/alarm.log`.
+- Run `agent-alarm doctor` and review the hook, backend resolution, backend availability, and presentation sections.
+- Run `agent-alarm test`; if it fails, run `agent-alarm logs` to inspect backend failures and fallback attempts.
 - Keep `CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK="0"` unless you intentionally want generic `osascript` fallback notifications.
-- If a notification seems to come from the wrong project, check `~/.codex/alarm/alarm.log`; Codex Alarm hooks are user-level and can fire from any active Codex session using the same `CODEX_HOME`.
-- Turn off Focus / Do Not Disturb if notifications are delivered silently.
 - Set `CODEX_ALARM_ACTIVATE_BUNDLE_ID` if clicking the notification does not focus your terminal.
-- Confirm macOS allows notifications for the app sending them.
-- Run `./uninstall.sh --dry-run` before uninstalling if you want to preview hook changes.
+
+macOS presentation checks:
+
+- After installing `terminal-notifier`, open **System Settings > Notifications > terminal-notifier**.
+- Enable notifications.
+- Set the alert style to Banners or Alerts.
+- Enable Sounds if you expect notification sound.
+- Turn off Focus / Do Not Disturb, or configure Focus to allow `terminal-notifier`.
+- Run `agent-alarm test` again after changing macOS settings.
+
+`alarm doctor` is read-only. It does not require elevated permissions and does not inspect or change macOS Notification Center state; macOS controls whether a delivered notification is shown, hidden, or silenced.
+
+Windows notification diagnostics are planned under the Windows support issues, not this macOS diagnostic slice.
+
+Run `./uninstall.sh --dry-run` before uninstalling if you want to preview hook changes.
 
 ## License
 
