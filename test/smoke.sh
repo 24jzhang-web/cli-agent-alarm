@@ -73,7 +73,7 @@ printf 'fake audio for dry-run\n' > "$custom_sound"
 printf 'fake override audio for dry-run\n' > "$custom_sound_override"
 PATH="/usr/bin:/bin" CODEX_ALARM_BACKEND=osascript CODEX_ALARM_SOUND=Ping "$ROOT/bin/alarm" test 2>&1 | grep -q '"backend":"osascript"'
 PATH="/usr/bin:/bin" CODEX_ALARM_BACKEND=osascript CODEX_ALARM_SOUND=Ping "$ROOT/bin/alarm" test 2>&1 | grep -q '"sound":"Ping"'
-PATH="/usr/bin:/bin" CODEX_ALARM_BACKEND=osascript CODEX_ALARM_SOUND= "$ROOT/bin/alarm" test 2>&1 | grep -q '"sound":""'
+PATH="/usr/bin:/bin" CODEX_ALARM_BACKEND=osascript CODEX_ALARM_SOUND='' "$ROOT/bin/alarm" test 2>&1 | grep -q '"sound":""'
 PATH="/usr/bin:/bin" CODEX_ALARM_BACKEND=osascript CODEX_ALARM_SOUND=Ping CODEX_ALARM_SOUND_FALLBACK=1 "$ROOT/bin/alarm" test > "$fallback_sound_log" 2>&1
 grep -q 'sound fallback: /System/Library/Sounds/Ping.aiff (afplay)' "$fallback_sound_log"
 PATH="/usr/bin:/bin" CODEX_ALARM_BACKEND=osascript CODEX_ALARM_SOUND=NotASound CODEX_ALARM_SOUND_FALLBACK=1 "$ROOT/bin/alarm" test > "$fallback_sound_log" 2>&1
@@ -348,7 +348,13 @@ grep -q 'CODEX_ALARM_ACTIVATE_BUNDLE_ID="com.mitchellh.ghostty"' "$fresh_alarm_h
 test -x "$fresh_alarm_home/alarm"
 test "$(readlink "$fresh_home/.local/bin/agent-alarm")" = "$fresh_alarm_home/alarm"
 grep -q 'Codex Alarm agent-alarm PATH' "$fresh_shell_config"
-(HOME="$fresh_home" PATH="/usr/bin:/bin"; . "$fresh_shell_config"; agent-alarm version) | grep -q '^1\.2\.0$'
+(
+  HOME="$fresh_home"
+  PATH="/usr/bin:/bin"
+  # shellcheck source=/dev/null
+  . "$fresh_shell_config"
+  agent-alarm version
+) | grep -q '^1\.2\.0$'
 
 echo "install"
 install_codex_home="$TMP_ROOT/install-codex"

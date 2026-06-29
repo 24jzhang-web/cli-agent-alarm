@@ -65,7 +65,7 @@ shell_config_has_path_block() {
 
 append_shell_path_block() {
   local file="$1"
-  local dir
+  local dir file_had_content=0
 
   [ -n "$file" ] || return 1
   shell_config_has_path_block "$file" && return 0
@@ -75,11 +75,15 @@ append_shell_path_block() {
   if [ -f "$file" ]; then
     cp "$file" "$file.codex-alarm-backup-$(date +%Y%m%d-%H%M%S)"
   fi
+  [ -s "$file" ] && file_had_content=1
   {
-    [ -s "$file" ] && printf '\n'
+    [ "$file_had_content" -eq 1 ] && printf '\n'
     printf '%s\n' "$PATH_MARKER_BEGIN"
+    # shellcheck disable=SC2016
     printf 'case ":$PATH:" in\n'
+    # shellcheck disable=SC2016
     printf '  *":$HOME/.local/bin:"*) ;;\n'
+    # shellcheck disable=SC2016
     printf '  *) export PATH="$HOME/.local/bin:$PATH" ;;\n'
     printf 'esac\n'
     printf '%s\n' "$PATH_MARKER_END"
@@ -157,7 +161,7 @@ JXA
 config_has_key() {
   local key="$1"
   [ -f "$CONFIG_FILE" ] || return 1
-  grep -Eq "^[[:space:]]*$key[[:space:]]*=" "$CONFIG_FILE"
+  grep -Eq "^[[:space:]]*${key}[[:space:]]*=" "$CONFIG_FILE"
 }
 
 ensure_config_key() {
