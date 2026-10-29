@@ -42,8 +42,8 @@ The hook entries run local commands on Codex lifecycle events. They are user-lev
 Clone or download this repo first so you can inspect the scripts before running them.
 
 ```sh
-git clone https://github.com/24jzhang-web/agent-cli-clarm.git
-cd agent-cli-clarm
+git clone https://github.com/24jzhang-web/cli-agent-alarm.git
+cd cli-agent-alarm
 ./install.sh --dry-run
 ./install.sh
 ```
@@ -67,7 +67,7 @@ Codex Alarm uses `terminal-notifier` by default. macOS built-in `osascript` is a
 If you installed an earlier v1 release from a Git clone, update the repo and rerun the installer:
 
 ```sh
-cd agent-cli-clarm
+cd cli-agent-alarm
 git pull
 ./install.sh --dry-run
 ./install.sh
@@ -132,6 +132,20 @@ agent-alarm test
 ```
 
 On many Macs, `terminal-notifier` starts with notifications disabled until you allow it. Open **System Settings > Notifications > terminal-notifier** and enable notifications, banners or alerts, and sounds. Also check that Focus / Do Not Disturb is not hiding banners.
+
+Some modern macOS setups can hang or fail inside `terminal-notifier` even when the Codex hooks are installed correctly. If `agent-alarm test` reports `backend=terminal-notifier ... timed out` or logs LaunchServices / Notification Center errors, use the built-in backend:
+
+```sh
+agent-alarm config path
+```
+
+Then edit the printed config file and set:
+
+```sh
+CODEX_ALARM_BACKEND="osascript"
+```
+
+`osascript` supports banner and sound notifications, but it uses a generic macOS script notification identity and does not support reliable click-to-focus.
 
 Codex Alarm auto-detects common macOS terminal/editor hosts from `TERM_PROGRAM` and a conservative parent-process check. Explicit config always wins, so set your terminal app bundle ID in `~/.codex/alarm/config` if clicking the notification opens the wrong app or does nothing:
 
@@ -399,6 +413,7 @@ Backend checks:
 - Install `terminal-notifier` for the recommended backend.
 - Run `agent-alarm doctor` and review the hook, backend resolution, backend availability, and presentation sections.
 - Run `agent-alarm test`; if it fails, run `agent-alarm logs` to inspect backend failures and fallback attempts.
+- If `terminal-notifier` hangs, times out, or logs LaunchServices / Notification Center errors on your macOS version, set `CODEX_ALARM_BACKEND="osascript"` in the config file printed by `agent-alarm config path`.
 - Keep `CODEX_ALARM_ALLOW_OSASCRIPT_FALLBACK="0"` unless you intentionally want generic `osascript` fallback notifications.
 - Set `CODEX_ALARM_ACTIVATE_BUNDLE_ID` if clicking the notification does not focus your terminal.
 
